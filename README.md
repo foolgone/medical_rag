@@ -1,16 +1,26 @@
 # 🏥 医疗RAG问答系统
 
+> 📸 **项目演示截图**
+> 
+> ![系统架构图](./images/img.png)
+> ![img_1.png](img_1.png)
+> *请将项目截图放在 `images/` 目录下*
+
 基于 LangChain、Ollama 和 PostgreSQL 的智能医疗文档检索增强生成系统，支持 RAG 检索问答和智能聊天双模式。
 
 ## ✨ 核心功能
 
 - 📚 **文档管理**：支持 PDF、Word、TXT 格式的医疗文档导入
+- 📤 **文件上传**：支持单文件和批量文件上传，自动导入知识库
 - 🔍 **智能检索**：基于语义的向量相似度搜索
+- 🔄 **MD5 去重**：自动检测重复文档，避免重复导入
 - 💬 **双模式问答**：
   - RAG 模式：基于检索到的文档生成专业回答
   - 聊天模式：无相关文档时直接调用 LLM 智能对话
--  **多轮对话**：保留对话历史，支持上下文理解
+- 🔄 **多轮对话**：保留对话历史，支持上下文理解
 - 📊 **对话管理**：自动保存对话记录到数据库
+- 🔄 **知识库更新**：支持增量更新和全量更新
+- 📈 **进度显示**：文件上传和导入过程实时进度反馈
 - 🌐 **双界面支持**：
   - FastAPI RESTful API（支持交互式文档）
   - Streamlit Web 前端界面
@@ -47,12 +57,16 @@ Medical_rag/
 │   ├── text_splitter.py   # 智能文本分割器
 │   ├── vector_store.py    # 向量存储管理
 │   ├── retriever.py       # 文档检索器
-│   └── rag_chain.py       # RAG链核心逻辑
+│   ├── rag_chain.py       # RAG链核心逻辑
+│   ├── md5_checker.py     # MD5去重校验器
+│   ├── file_upload_service.py  # 文件上传服务
+│   └── knowledge_base_update.py # 知识库更新服务
 ├── llm/                   # LLM客户端模块
 │   ├── __init__.py
 │   └── ollama_client.py   # Ollama API客户端
 ├── data/                  # 数据目录
-│   └── medical_docs/      # 医疗文档存储
+│   ├── medical_docs/      # 医疗文档存储
+│   └── md5_records.txt    # MD5去重记录
 ├── logs/                  # 日志目录
 ├── config.py              # 项目配置
 ├── main.py                # FastAPI应用入口
@@ -142,7 +156,14 @@ streamlit run app_streamlit.py
 
 ### 步骤6：导入文档
 
-在前端界面点击「📥 导入文档」按钮，或通过 API：
+#### 方式一：通过前端界面上传文件
+
+1. 在侧边栏选择文档分类
+2. 上传单个文件或批量上传多个文件
+3. 系统自动检测重复文件（MD5 去重）
+4. 自动导入到知识库
+
+#### 方式二：通过 API 导入目录文档
 
 ```bash
 curl -X POST "http://localhost:8000/api/v1/ingest" \
@@ -153,6 +174,18 @@ curl -X POST "http://localhost:8000/api/v1/ingest" \
   }'
 ```
 
+#### 方式三：知识库更新
+
+- **增量更新**：仅导入新增文件，自动跳过已存在文档
+  ```bash
+  curl -X POST "http://localhost:8000/api/v1/update/incremental"
+  ```
+
+- **全量更新**：重新导入所有文件
+  ```bash
+  curl -X POST "http://localhost:8000/api/v1/update/full"
+  ```
+
 ## 📖 API 文档
 
 ### 主要接口
@@ -161,9 +194,36 @@ curl -X POST "http://localhost:8000/api/v1/ingest" \
 |------|------|------|
 | `/api/v1/health` | GET | 健康检查 |
 | `/api/v1/query` | POST | 智能问答 |
-| `/api/v1/ingest` | POST | 导入文档 |
+| `/api/v1/query-stream` | POST | 流式问答 |
+| `/api/v1/ingest` | POST | 导入目录文档 |
 | `/api/v1/stats` | GET | 获取统计信息 |
 | `/api/v1/documents/delete` | POST | 删除文档 |
+| `/api/v1/upload` | POST | 上传单个文件 |
+| `/api/v1/upload/batch` | POST | 批量上传文件 |
+| `/api/v1/ingest-file` | POST | 导入已上传文件 |
+| `/api/v1/files` | GET | 获取文件列表 |
+| `/api/v1/files/{filename}` | DELETE | 删除文件 |
+| `/api/v1/update/incremental` | POST | 增量更新知识库 |
+| `/api/v1/update/full` | POST | 全量更新知识库 |
+
+### 文件上传接口示例
+
+#### 单文件上传
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/upload" \
+  -F "file=@document.pdf" \
+  -F "category=general"
+```
+
+#### 批量文件上传
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/upload/batch" \
+  -F "files=@doc1.pdf" \
+  -F "files=@doc2.docx" \
+  -F "category=general"
+```
 
 ### 问答接口示例
 
@@ -212,6 +272,8 @@ curl -X POST "http://localhost:8000/api/v1/query" \
 | `API_PORT` | `8000` | API服务端口 |
 | `DEBUG` | `true` | 调试模式 |
 | `LOG_LEVEL` | `INFO` | 日志级别 |
+| `MAX_UPLOAD_SIZE` | `52428800` | 最大上传文件大小（50MB） |
+| `ALLOWED_EXTENSIONS` | `pdf,docx,txt` | 允许上传的文件格式 |
 
 ## 🎯 工作流程
 
@@ -229,6 +291,30 @@ curl -X POST "http://localhost:8000/api/v1/query" \
 返回回答 + 参考来源
   ↓
 保存到数据库
+```
+
+### 文件上传与导入流程
+
+```
+用户上传文件
+  ↓
+文件验证（格式、大小）
+  ↓
+保存到本地目录
+  ↓
+MD5 校验（检查是否重复）
+  ├─ 已存在 → 跳过
+  └─ 新文件 → 继续
+  ↓
+文档加载（PDF/Word/TXT）
+  ↓
+文本分割
+  ↓
+生成向量嵌入
+  ↓
+存储到向量数据库
+  ↓
+更新 MD5 记录
 ```
 
 ### 智能切换逻辑
@@ -307,21 +393,47 @@ TOP_K=5               # 检索数量
 
 **解决**：这些警告不影响功能，仅在非 Streamlit 环境下运行时出现。确保使用 `streamlit run app_streamlit.py` 启动前端。
 
+### 5. 文件上传失败
+
+**问题**：`Form data requires "python-multipart" to be installed`
+
+**解决**：
+```bash
+pip install python-multipart
+```
+
+### 6. Streamlit 命令未找到
+
+**问题**：`streamlit : 无法将"streamlit"项识别为 cmdlet`
+
+**解决**：
+```bash
+# 方式一：使用 Python 模块运行
+python -m streamlit run app_streamlit.py
+
+# 方式二：确保虚拟环境激活并安装 streamlit
+.venv\Scripts\activate
+pip install streamlit
+```
+
 ## 📊 系统架构
 
 ```
 ┌─────────────────────────────────────────────────┐
 │                  Streamlit 前端                  │
 │              http://localhost:8501               │
-└────────────────┬────────────────────────────────┘
-                 │ HTTP REST API
-┌────────────────▼────────────────────────────────┐
+│  ┌──────────┐  ┌──────────  ┌──────────────  │
+│  │ 文件上传 │  │ 进度显示 │  │ 知识库更新   │  │
+│  └────┬─────┘  └────┬─────  └──────┬───────┘  │
+└───────┼─────────────┼──────────────────────────┘
+        │ HTTP REST API
+┌───────▼─────────────▼────────────────▼──────────┐
 │               FastAPI 后端服务                    │
 │              http://localhost:8000               │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────┐  │
-│  │  RAG链   │  │ 检索器   │  │  LLM客户端   │  │
-│  └────┬─────┘  └────┬─────  └──────┬───────┘  │
-└───────┼─────────────┼────────────────┼──────────┘
+│  ┌──────────┐  ┌──────────  ┌──────────────  │
+│  │  RAG链   │  │ MD5去重  │  │ 文件上传服务 │  │
+│  └────┬─────┘  └────┬─────  └─────────────┘  │
+└───────┼─────────────┼──────────────────────────┘
         │             │                │
 ┌───────▼─────┐ ┌────▼──────┐  ┌──────▼──────────┐
 │ PostgreSQL  │ │ Ollama    │  │  Ollama         │
