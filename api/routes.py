@@ -2,9 +2,9 @@
 API路由定义
 提供RESTful API接口
 """
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from fastapi.responses import StreamingResponse
-from typing import Optional, AsyncGenerator
+from typing import Optional, AsyncGenerator, List
 from api.schemas import (
     QueryRequest,
     QueryResponse,
@@ -13,9 +13,15 @@ from api.schemas import (
     DeleteDocumentsRequest,
     DeleteDocumentsResponse,
     StatsResponse,
-    HealthResponse
+    HealthResponse,
+    FileUploadResponse,
+    BatchUploadResponse,
+    FileListResponse,
+    FileInfo
 )
 from rag.rag_chain import MedicalRAGChain
+from rag.file_upload_service import FileUploadService
+from rag.knowledge_base_update import KnowledgeBaseUpdateService
 from loguru import logger
 import json
 
@@ -23,6 +29,8 @@ router = APIRouter()
 
 # 创建全局RAG链实例
 rag_chain = MedicalRAGChain()
+file_upload_service = FileUploadService()
+update_service = KnowledgeBaseUpdateService(rag_chain)
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -247,4 +255,218 @@ async def get_stats():
     except Exception as e:
         logger.error(f"获取统计信息失败: {e}")
         raise HTTPException(status_code=500, detail=f"获取统计信息失败: {str(e)}")
+
+
+@router.post("/upload", response_model=FileUploadResponse)
+async def upload_file(
+    file: UploadFile = File(...),
+    category: str = "general"
+):
+    """
+    上传单个文件接口
+
+    Args:
+        file: 上传的文件
+        category: 文档分类
+
+    Returns:
+        文件信息
+    """
+    try:
+        logger.info(f"收到文件上传请求: {file.filename}")
+        result = await file_upload_service.save_uploaded_file(file, category)
+        
+        return FileUploadResponse(
+            filename=result['filename'],
+            filepath=result['filepath'],
+            category=result['category'],
+            size=result['size'],
+            success=True,
+            message=f"文件上传成功: {result['filename']}"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"文件上传失败: {e}")
+        raise HTTPException(status_code=500, detail=f"文件上传失败: {str(e)}")
+
+
+@router.post("/upload/batch", response_model=BatchUploadResponse)
+async def upload_files_batch(
+    files: List[UploadFile] = File(...),
+    category: str = "general"
+):
+    """
+    批量上传文件接口
+
+    Args:
+        files: 上传的文件列表
+        category: 文档分类
+
+    Returns:
+        批量上传结果
+    """
+    try:
+        logger.info(f"收到批量文件上传请求，数量: {len(files)}")
+        results = await file_upload_service.save_multiple_files(files, category)
+        
+        success_count = sum(1 for r in results if r.get('success'))
+        failed_count = len(results) - success_count
+        
+        return BatchUploadResponse(
+            total=len(results),
+            success_count=success_count,
+            failed_count=failed_count,
+            results=[FileUploadResponse(**r) for r in results if 'filepath' in r]
+        )
+    except Exception as e:
+        logger.error(f"批量文件上传失败: {e}")
+        raise HTTPException(status_code=500, detail=f"批量文件上传失败: {str(e)}")
+
+
+@router.get("/files", response_model=FileListResponse)
+async def list_files(category: Optional[str] = None):
+    """
+    获取已上传的文件列表
+
+    Args:
+        category: 文档分类过滤
+
+    Returns:
+        文件列表
+    """
+    try:
+        logger.info(f"获取文件列表请求, category: {category}")
+        files = file_upload_service.list_uploaded_files(category)
+        
+        return FileListResponse(
+            files=[FileInfo(**f) for f in files],
+            total=len(files)
+        )
+    except Exception as e:
+        logger.error(f"获取文件列表失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取文件列表失败: {str(e)}")
+
+
+@router.delete("/files/{filename}", response_model=DeleteDocumentsResponse)
+async def delete_file(filename: str, category: str = "general"):
+    """
+    删除已上传的文件
+
+    Args:
+        filename: 文件名
+        category: 文档分类
+
+    Returns:
+        删除结果
+    """
+    try:
+        logger.info(f"删除文件请求: {filename}")
+        success = file_upload_service.delete_file(filename, category)
+        
+        return DeleteDocumentsResponse(
+            success=success,
+            message=f"文件删除成功: {filename}" if success else f"文件不存在: {filename}"
+        )
+    except Exception as e:
+        logger.error(f"删除文件失败: {e}")
+        raise HTTPException(status_code=500, detail=f"删除文件失败: {str(e)}")
+
+
+@router.post("/ingest-file", response_model=IngestResponse)
+async def ingest_uploaded_file(
+    filepath: str,
+    category: str = "general"
+):
+    """
+    导入已上传的文件到知识库
+
+    Args:
+        filepath: 文件路径
+        category: 文档分类
+
+    Returns:
+        导入结果
+    """
+    try:
+        logger.info(f"导入文件到知识库: {filepath}")
+        
+        # 加载单个文件
+        documents, is_new = rag_chain.document_loader.load_single_file(filepath)
+        
+        if not documents:
+            return IngestResponse(
+                success=False,
+                ingested_count=0,
+                message="文件加载失败或文件已存在"
+            )
+        
+        # 添加元数据
+        documents = rag_chain.document_loader.add_metadata(documents, category)
+        
+        # 分割并存储
+        split_docs = rag_chain.text_splitter.split_documents(documents)
+        doc_ids = rag_chain.vector_store.add_documents(split_docs)
+        
+        return IngestResponse(
+            success=True,
+            ingested_count=len(doc_ids),
+            message=f"成功导入 {len(doc_ids)} 个文档块"
+        )
+    except Exception as e:
+        logger.error(f"文件导入失败: {e}")
+        raise HTTPException(status_code=500, detail=f"文件导入失败: {str(e)}")
+
+
+@router.post("/update/incremental", response_model=IngestResponse)
+async def incremental_update(data_dir: Optional[str] = None, category: str = "general"):
+    """
+    增量更新知识库（仅导入新文件）
+
+    Args:
+        data_dir: 文档目录
+        category: 文档分类
+
+    Returns:
+        更新结果
+    """
+    try:
+        logger.info("收到增量更新请求")
+        result = update_service.incremental_update(data_dir, category)
+        
+        return IngestResponse(
+            success=result['success'],
+            ingested_count=result['ingested_count'],
+            message=result['message']
+        )
+    except Exception as e:
+        logger.error(f"增量更新失败: {e}")
+        raise HTTPException(status_code=500, detail=f"增量更新失败: {str(e)}")
+
+
+@router.post("/update/full", response_model=IngestResponse)
+async def full_update(data_dir: Optional[str] = None, category: str = "general", clear_first: bool = False):
+    """
+    全量更新知识库（重新导入所有文件）
+
+    Args:
+        data_dir: 文档目录
+        category: 文档分类
+        clear_first: 是否先清空现有数据
+
+    Returns:
+        更新结果
+    """
+    try:
+        logger.info("收到全量更新请求")
+        result = update_service.full_update(data_dir, category, clear_first)
+        
+        return IngestResponse(
+            success=result['success'],
+            ingested_count=result['ingested_count'],
+            message=result['message']
+        )
+    except Exception as e:
+        logger.error(f"全量更新失败: {e}")
+        raise HTTPException(status_code=500, detail=f"全量更新失败: {str(e)}")
 

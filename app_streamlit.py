@@ -82,6 +82,163 @@ with st.sidebar:
 
     st.divider()
 
+    # 文件上传功能
+    st.header("📤 文件上传")
+    
+    # 分类选择
+    upload_category = st.selectbox(
+        "文档分类",
+        ["general", "cardiology", "endocrinology", "neurology", "other"],
+        help="选择文档所属分类"
+    )
+    
+    # 单文件上传
+    uploaded_file = st.file_uploader(
+        "上传单个文件",
+        type=['pdf', 'docx', 'txt'],
+        help="支持 PDF、Word、TXT 格式"
+    )
+    
+    if uploaded_file is not None:
+        if st.button("📥 上传并导入", key="upload_single"):
+            with st.spinner("正在上传文件..."):
+                try:
+                    # 上传文件
+                    files = {'file': (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
+                    response = requests.post(
+                        f"{api_url}/upload",
+                        files=files,
+                        data={'category': upload_category}
+                    )
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        st.success(f"✅ 文件上传成功: {result['filename']}")
+                        
+                        # 自动导入到知识库
+                        with st.spinner("正在导入到知识库..."):
+                            ingest_response = requests.post(
+                                f"{api_url}/ingest-file",
+                                json={
+                                    'filepath': result['filepath'],
+                                    'category': upload_category
+                                }
+                            )
+                            
+                            if ingest_response.status_code == 200:
+                                ingest_result = ingest_response.json()
+                                st.success(f"✅ 知识库导入成功: {ingest_result['ingested_count']} 个文档块")
+                            else:
+                                st.error(f"❌ 导入失败: {ingest_response.text}")
+                    else:
+                        st.error(f"❌ 上传失败: {response.text}")
+                except Exception as e:
+                    st.error(f"❌ 错误: {str(e)}")
+    
+    # 批量上传
+    st.divider()
+    st.subheader("批量上传")
+    uploaded_files = st.file_uploader(
+        "选择多个文件",
+        type=['pdf', 'docx', 'txt'],
+        accept_multiple_files=True,
+        help="可一次选择多个文件"
+    )
+    
+    if uploaded_files and len(uploaded_files) > 0:
+        st.write(f"已选择 {len(uploaded_files)} 个文件")
+        
+        if st.button("📥 批量上传并导入", key="upload_batch"):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            try:
+                # 批量上传
+                files_data = []
+                for i, file in enumerate(uploaded_files):
+                    files_data.append(
+                        ('files', (file.name, file.getvalue(), file.type))
+                    )
+                    progress_bar.progress((i + 1) / (len(uploaded_files) * 2))
+                    status_text.text(f"准备上传: {i + 1}/{len(uploaded_files)}")
+                
+                status_text.text("正在上传文件...")
+                response = requests.post(
+                    f"{api_url}/upload/batch",
+                    files=files_data,
+                    data={'category': upload_category}
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    progress_bar.progress(0.5)
+                    status_text.text(f"上传完成: 成功 {result['success_count']}/{result['total']}")
+                    
+                    # 逐个导入
+                    success_ingest = 0
+                    total_files = len(result.get('results', []))
+                    
+                    for i, file_result in enumerate(result.get('results', [])):
+                        if file_result.get('success'):
+                            ingest_response = requests.post(
+                                f"{api_url}/ingest-file",
+                                json={
+                                    'filepath': file_result['filepath'],
+                                    'category': upload_category
+                                }
+                            )
+                            if ingest_response.status_code == 200:
+                                success_ingest += 1
+                        
+                        progress = 0.5 + (i + 1) / (total_files * 2)
+                        progress_bar.progress(min(progress, 1.0))
+                        status_text.text(f"导入中: {i + 1}/{total_files}")
+                    
+                    progress_bar.progress(1.0)
+                    status_text.text("✅ 全部完成！")
+                    st.success(f"成功导入 {success_ingest}/{total_files} 个文件")
+                else:
+                    st.error(f"❌ 批量上传失败: {response.text}")
+                    
+            except Exception as e:
+                st.error(f"❌ 错误: {str(e)}")
+            finally:
+                time.sleep(2)
+                progress_bar.empty()
+                status_text.empty()
+    
+    st.divider()
+
+    # 知识库更新
+    st.header("🔄 知识库更新")
+    
+    if st.button("📊 增量更新", help="仅导入新增文件"):
+        with st.spinner("正在执行增量更新..."):
+            try:
+                response = requests.post(f"{api_url}/update/incremental")
+                if response.status_code == 200:
+                    result = response.json()
+                    st.success(f"✅ {result['message']}")
+                else:
+                    st.error(f"❌ 更新失败: {response.text}")
+            except Exception as e:
+                st.error(f"❌ 错误: {str(e)}")
+    
+    if st.button("🔄 全量更新", help="重新导入所有文件"):
+        if st.warning("⚠️ 全量更新将重新导入所有文件，确定继续？"):
+            with st.spinner("正在执行全量更新..."):
+                try:
+                    response = requests.post(f"{api_url}/update/full")
+                    if response.status_code == 200:
+                        result = response.json()
+                        st.success(f"✅ {result['message']}")
+                    else:
+                        st.error(f"❌ 更新失败: {response.text}")
+                except Exception as e:
+                    st.error(f"❌ 错误: {str(e)}")
+
+    st.divider()
+
     # 功能按钮
     if st.button("🗑️ 清空对话"):
         st.session_state.messages = []
@@ -95,6 +252,20 @@ with st.sidebar:
                 st.json(stats)
             else:
                 st.error("获取统计信息失败")
+        except Exception as e:
+            st.error(f"错误: {str(e)}")
+    
+    if st.button("📁 查看已上传文件"):
+        try:
+            response = requests.get(f"{api_url}/files")
+            if response.status_code == 200:
+                result = response.json()
+                st.write(f"共 {result['total']} 个文件")
+                for file_info in result.get('files', []):
+                    size_kb = file_info['size'] / 1024
+                    st.text(f"📄 {file_info['filename']} ({size_kb:.1f}KB)")
+            else:
+                st.error("获取文件列表失败")
         except Exception as e:
             st.error(f"错误: {str(e)}")
 

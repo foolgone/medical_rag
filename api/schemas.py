@@ -58,3 +58,35 @@ class HealthResponse(BaseModel):
     """健康检查响应模型"""
     status: str = Field(..., description="服务状态")
     version: str = Field(..., description="版本号")
+
+
+class FileUploadResponse(BaseModel):
+    """文件上传响应模型"""
+    filename: str = Field(..., description="文件名")
+    filepath: str = Field(..., description="文件路径")
+    category: str = Field(..., description="文档分类")
+    size: int = Field(..., description="文件大小（字节）")
+    success: bool = Field(..., description="是否成功")
+    message: Optional[str] = Field(None, description="提示信息")
+
+
+class BatchUploadResponse(BaseModel):
+    """批量上传响应模型"""
+    total: int = Field(..., description="总文件数")
+    success_count: int = Field(..., description="成功数量")
+    failed_count: int = Field(..., description="失败数量")
+    results: List[FileUploadResponse] = Field(..., description="详细结果")
+
+
+class FileInfo(BaseModel):
+    """文件信息模型"""
+    filename: str = Field(..., description="文件名")
+    category: str = Field(..., description="文档分类")
+    size: int = Field(..., description="文件大小（字节）")
+    path: str = Field(..., description="文件路径")
+
+
+class FileListResponse(BaseModel):
+    """文件列表响应模型"""
+    files: List[FileInfo] = Field(..., description="文件列表")
+    total: int = Field(..., description="文件总数")

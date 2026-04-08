@@ -3,6 +3,7 @@ RAG链核心逻辑
 整合检索和生成，提供完整的问答流程
 """
 from typing import List, Optional, Dict
+from pathlib import Path
 from langchain_core.documents import Document
 from rag.document_loader import MedicalDocumentLoader
 from rag.text_splitter import MedicalTextSplitter
@@ -48,8 +49,8 @@ class MedicalRAGChain:
             
             # 加载文档
             if data_dir:
-                self.document_loader.data_dir = data_dir
-            documents = self.document_loader.load_directory()
+                self.document_loader.data_dir = Path(data_dir)
+            documents, success_count, skip_count = self.document_loader.load_directory()
             
             if not documents:
                 logger.warning("没有找到可导入的文档")
