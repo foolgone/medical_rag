@@ -4,6 +4,7 @@
 > 
 > ![系统架构图](./images/img.png)
 > ![img_1.png](img_1.png)
+> 
 > *请将项目截图放在 `images/` 目录下*
 
 基于 LangChain、Ollama 和 PostgreSQL 的智能医疗文档检索增强生成系统，支持 RAG 检索问答和智能聊天双模式。

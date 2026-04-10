@@ -4,7 +4,7 @@ langchain-community
 langchain-postgres
 pydantic
 pydantic-settings
-
+langgraph
 # LLM和嵌入模型
 ollama
 langchain-ollama
