@@ -10,11 +10,19 @@ from app.pages.knowledge_page import KnowledgePage
 from app.pages.settings_page import SettingsPage
 
 
+@st.cache_resource
+def get_api_client(config: AppConfig) -> APIClient:
+    """缓存API客户端，避免重复创建"""
+    return APIClient(config)
+
+
 def main():
     """主函数"""
-    # 初始化配置和客户端
+    # 初始化配置
     config = AppConfig()
-    api_client = APIClient(config)
+
+    # 使用缓存的API客户端
+    api_client = get_api_client(config)
 
     # 初始化状态管理器
     state_manager.initialize()
@@ -26,8 +34,10 @@ def main():
         layout="wide"
     )
 
-    # 应用全局样式
-    st.markdown(style_manager.get_global_styles(), unsafe_allow_html=True)
+    # 应用全局样式（只渲染一次）
+    if 'styles_applied' not in st.session_state:
+        st.markdown(style_manager.get_global_styles(), unsafe_allow_html=True)
+        st.session_state.styles_applied = True
 
     # 渲染标题
     st.markdown('<h1 class="main-header">🏥 医疗Agent问答系统</h1>', unsafe_allow_html=True)
@@ -64,3 +74,4 @@ def render_footer():
 
 if __name__ == "__main__":
     main()
+
