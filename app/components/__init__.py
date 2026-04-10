@@ -1,4 +1,4 @@
-"""组件包初始化"""
+"""UI组件模块"""
 from app.components.chat_area import render_chat_area
 from app.components.knowledge_base import render_knowledge_base_module
 from app.components.settings import render_settings_module
