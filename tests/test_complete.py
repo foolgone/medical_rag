@@ -1,4 +1,5 @@
 """完整流程测试"""
+import json
 import requests
 import time
 
@@ -16,7 +17,8 @@ def test_complete_workflow():
     payload = {
         "question": "我身高180cm，体重80kg，请计算我的BMI",
         "session_id": "workflow_test",
-        "k": 3
+        "k": 3,
+        "category": "general"
     }
     response = requests.post(f"{BASE_URL}/query", json=payload)
     assert response.status_code == 200
@@ -30,7 +32,8 @@ def test_complete_workflow():
     payload = {
         "question": "我头痛、发热已经3天了，可能是什么病？",
         "session_id": "workflow_test",
-        "k": 3
+        "k": 3,
+        "category": "general"
     }
     response = requests.post(f"{BASE_URL}/query", json=payload)
     assert response.status_code == 200
@@ -42,7 +45,8 @@ def test_complete_workflow():
     payload = {
         "question": "胸痛应该挂什么科？",
         "session_id": "workflow_test",
-        "k": 3
+        "k": 3,
+        "category": "general"
     }
     response = requests.post(f"{BASE_URL}/query", json=payload)
     assert response.status_code == 200
@@ -54,7 +58,8 @@ def test_complete_workflow():
     payload = {
         "question": "高血压应该注意什么？",
         "session_id": "workflow_test",
-        "k": 3
+        "k": 3,
+        "category": "general"
     }
     response = requests.post(
         f"{BASE_URL}/query-stream",

@@ -17,7 +17,7 @@ def get_rag_chain() -> MedicalRAGChain:
 
 
 @tool
-def search_medical_knowledge(query: str, k: int = 3) -> str:
+def search_medical_knowledge(query: str, k: int = 3, category: str = "") -> str:
     """
     从医疗知识库中检索相关信息
 
@@ -30,7 +30,8 @@ def search_medical_knowledge(query: str, k: int = 3) -> str:
     """
     try:
         rag_chain = get_rag_chain()
-        docs = rag_chain.retriever.retrieve(query, k=k)
+        filter_dict = rag_chain.build_filter_dict(category) if category else None
+        docs = rag_chain.retriever.retrieve(query, k=k, filter_dict=filter_dict)
 
         if not docs:
             return "未在知识库中找到相关信息"

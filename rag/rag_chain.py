@@ -2,10 +2,12 @@
 RAG链核心逻辑
 整合检索和生成，提供完整的问答流程
 """
-from typing import List, Optional, Dict
+from datetime import datetime
+from typing import AsyncGenerator, Dict, List, Optional
 from pathlib import Path
 from langchain_core.documents import Document
 from rag.document_loader import MedicalDocumentLoader
+from rag.md5_checker import MD5Checker
 from rag.text_splitter import MedicalTextSplitter
 from rag.vector_store import MedicalVectorStore, MedicalEmbeddings
 from rag.retriever import MedicalRetriever
@@ -32,6 +34,28 @@ class MedicalRAGChain:
         self.llm_client = MedicalLLMClient()
         
         logger.info("医疗RAG链初始化完成")
+
+    @staticmethod
+    def build_filter_dict(category: Optional[str] = None) -> Optional[Dict[str, str]]:
+        """构建检索过滤条件"""
+        if not category or category == "all":
+            return None
+        return {"category": category}
+
+    @staticmethod
+    def serialize_sources(documents: List[Document]) -> List[Dict]:
+        """序列化来源信息"""
+        return [
+            {
+                "source": doc.metadata.get("source", "未知"),
+                "category": doc.metadata.get("category", "未知"),
+                "content": doc.page_content[:200],
+                "score": doc.metadata.get("score"),
+                "page": doc.metadata.get("page"),
+                "chunk_id": doc.metadata.get("chunk_id"),
+            }
+            for doc in documents
+        ]
     
     def ingest_documents(self, data_dir: str = None, category: str = "general") -> int:
         """
@@ -115,15 +139,16 @@ class MedicalRAGChain:
             result = {
                 "question": question,
                 "answer": answer,
-                "context_count": len(docs),
-                "sources": [
-                    {
-                        "content": doc.page_content[:200],
-                        "source": doc.metadata.get("source", "未知"),
-                        "category": doc.metadata.get("category", "未知")
-                    }
-                    for doc in docs
-                ]
+                "session_id": session_id,
+                "sources": self.serialize_sources(docs),
+                "tool_calls": [],
+                "tool_calls_count": 0,
+                "debug_info": {
+                    "requested_k": k,
+                    "applied_category": filter_dict.get("category") if filter_dict else None,
+                    "retrieval_count": len(docs),
+                    "used_chat_mode": not docs,
+                },
             }
 
             logger.info("问题回答完成")
@@ -131,6 +156,91 @@ class MedicalRAGChain:
         except Exception as e:
             logger.error(f"回答问题失败: {e}")
             raise
+
+    async def stream_query(
+        self,
+        question: str,
+        session_id: Optional[str] = None,
+        k: int = None,
+        filter_dict: Optional[dict] = None
+    ) -> AsyncGenerator[Dict, None]:
+        """
+        流式回答问题
+
+        Args:
+            question: 用户问题
+            session_id: 会话ID
+            k: 检索文档数量
+            filter_dict: 过滤条件
+
+        Yields:
+            标准化流式事件
+        """
+        logger.info(f"流式处理问题: {question[:50]}...")
+
+        try:
+            docs = self.retriever.retrieve(question, k=k, filter_dict=filter_dict)
+            sources = self.serialize_sources(docs)
+            used_chat_mode = not docs
+
+            yield {
+                "type": "start",
+                "message": "RAG开始处理",
+                "session_id": session_id,
+            }
+
+            if sources:
+                yield {
+                    "type": "retrieval",
+                    "sources": sources,
+                }
+
+            answer_parts: List[str] = []
+
+            if used_chat_mode:
+                messages = self._build_chat_messages(question, session_id)
+                async for chunk in self.llm_client.chat_stream(messages):
+                    answer_parts.append(chunk)
+                    yield {
+                        "type": "content",
+                        "content": chunk,
+                    }
+                context = ""
+            else:
+                context = self.retriever.format_context(docs)
+                async for chunk in self.llm_client.generate_with_context_stream(question, context):
+                    answer_parts.append(chunk)
+                    yield {
+                        "type": "content",
+                        "content": chunk,
+                    }
+
+            answer = "".join(answer_parts).strip()
+
+            if session_id:
+                self._save_conversation(session_id, question, answer, context)
+
+            yield {
+                "type": "end",
+                "question": question,
+                "answer": answer,
+                "session_id": session_id,
+                "sources": sources,
+                "tool_calls": [],
+                "tool_calls_count": 0,
+                "debug_info": {
+                    "requested_k": k,
+                    "applied_category": filter_dict.get("category") if filter_dict else None,
+                    "retrieval_count": len(docs),
+                    "used_chat_mode": used_chat_mode,
+                },
+            }
+        except Exception as e:
+            logger.error(f"流式回答问题失败: {e}")
+            yield {
+                "type": "error",
+                "error": str(e),
+            }
 
     def _chat_mode(self, question: str, session_id: Optional[str] = None) -> str:
         """
@@ -151,16 +261,7 @@ class MedicalRAGChain:
 4. 提供实用的健康建议
 5. 承认知识局限性，不过度自信"""
 
-        messages = [{"role": "system", "content": system_prompt}]
-
-        # 如果有会话ID，尝试加载最近的对话历史
-        if session_id:
-            recent_history = self._get_recent_conversation(session_id, limit=3)
-            for hist in recent_history:
-                messages.append({"role": "user", "content": hist['question']})
-                messages.append({"role": "assistant", "content": hist['answer']})
-
-        messages.append({"role": "user", "content": question})
+        messages = self._build_chat_messages(question, session_id, system_prompt)
 
         try:
             answer = self.llm_client.chat(messages)
@@ -169,6 +270,32 @@ class MedicalRAGChain:
         except Exception as e:
             logger.error(f"聊天模式回答失败: {e}")
             return f"抱歉，我在生成回答时遇到了问题：{str(e)}"
+
+    def _build_chat_messages(
+        self,
+        question: str,
+        session_id: Optional[str] = None,
+        system_prompt: Optional[str] = None
+    ) -> List[Dict[str, str]]:
+        """构建聊天模式消息列表"""
+        system_prompt = system_prompt or """你是一个专业的医疗助手，具备丰富的医学知识。
+请遵循以下原则：
+1. 回答要专业、准确、易懂
+2. 如果涉及具体诊断或用药，请提醒用户咨询专业医生
+3. 可以用通俗易懂的语言解释医学概念
+4. 提供实用的健康建议
+5. 承认知识局限性，不过度自信"""
+
+        messages = [{"role": "system", "content": system_prompt}]
+
+        if session_id:
+            recent_history = self._get_recent_conversation(session_id, limit=3)
+            for hist in recent_history:
+                messages.append({"role": "user", "content": hist['question']})
+                messages.append({"role": "assistant", "content": hist['answer']})
+
+        messages.append({"role": "user", "content": question})
+        return messages
 
     def _get_recent_conversation(self, session_id: str, limit: int = 3) -> List:
         """
@@ -261,12 +388,41 @@ class MedicalRAGChain:
             统计信息字典
         """
         try:
-            # 这里可以根据实际需求实现统计逻辑
+            supported_extensions = {".pdf", ".docx", ".txt"}
+            data_dir = self.document_loader.data_dir
+            files = [
+                file_path for file_path in data_dir.rglob("*")
+                if file_path.is_file() and file_path.suffix.lower() in supported_extensions
+            ]
+
+            md5_checker = self.document_loader.md5_checker or MD5Checker()
+            vectorized_files = 0
+            categories = set()
+            last_updated = None
+
+            for file_path in files:
+                if md5_checker.check_file_exists(str(file_path)):
+                    vectorized_files += 1
+
+                category = file_path.parent.name if file_path.parent != data_dir else "general"
+                categories.add(category)
+
+                modified_at = datetime.fromtimestamp(file_path.stat().st_mtime)
+                if last_updated is None or modified_at > last_updated:
+                    last_updated = modified_at
+
+            total_files = len(files)
             stats = {
                 "collection_name": self.vector_store.collection_name,
                 "embedding_model": self.embeddings.model_name,
                 "llm_model": self.llm_client.model_name,
-                "top_k": self.retriever.k
+                "top_k": self.retriever.k,
+                "total_files": total_files,
+                "vectorized_files": vectorized_files,
+                "pending_files": max(total_files - vectorized_files, 0),
+                "document_chunks": self.vector_store.count_documents(),
+                "category_count": len(categories),
+                "last_updated": last_updated.isoformat() if last_updated else None,
             }
             return stats
         except Exception as e:

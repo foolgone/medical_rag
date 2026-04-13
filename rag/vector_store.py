@@ -3,9 +3,13 @@
 使用Ollama提供嵌入服务，PostgreSQL存储向量
 """
 from typing import List, Optional
+
+from sqlalchemy import text
+
 from langchain_ollama import OllamaEmbeddings
 from langchain_postgres import PGVector
 from config import settings
+from database.connection import engine
 from loguru import logger
 
 
@@ -196,3 +200,27 @@ class MedicalVectorStore:
         except Exception as e:
             logger.error(f"带分数相似度搜索失败: {e}")
             raise
+
+    def count_documents(self) -> int:
+        """
+        统计当前集合中的文档块数量
+
+        Returns:
+            文档块数量
+        """
+        sql = text(
+            """
+            SELECT COUNT(*)
+            FROM langchain_pg_embedding e
+            JOIN langchain_pg_collection c ON e.collection_id = c.uuid
+            WHERE c.name = :collection_name
+            """
+        )
+
+        try:
+            with engine.connect() as conn:
+                count = conn.execute(sql, {"collection_name": self.collection_name}).scalar()
+            return int(count or 0)
+        except Exception as e:
+            logger.warning(f"统计向量文档块失败: {e}")
+            return 0

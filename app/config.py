@@ -15,8 +15,16 @@ class AppConfig:
         return f"{self.api_base_url}/query"
 
     @property
+    def query_rag_url(self) -> str:
+        return f"{self.api_base_url}/query-rag"
+
+    @property
     def query_stream_url(self) -> str:
         return f"{self.api_base_url}/query-stream"
+
+    @property
+    def query_stream_rag_url(self) -> str:
+        return f"{self.api_base_url}/query-stream-rag"
 
     @property
     def upload_url(self) -> str:

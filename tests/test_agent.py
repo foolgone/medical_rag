@@ -56,9 +56,11 @@ async def test_agent_query():
     """测试Agent问答（需要Ollama运行）"""
     try:
         agent = MedicalAgent()
-        result = agent.query("我身高175cm，体重70kg，BMI是多少？")
+        result = agent.query("我身高175cm，体重70kg，BMI是多少？", k=3, category="general")
         assert "answer" in result
         assert result["tool_calls_count"] >= 0
+        assert "sources" in result
+        assert "debug_info" in result
         print(f"✅ Agent问答测试通过")
         print(f"回答: {result['answer'][:100]}...")
         print(f"调用工具数: {result['tool_calls_count']}")

@@ -1,7 +1,8 @@
 """前端组件测试"""
 import sys
+from pathlib import Path
 
-sys.path.append("..")
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app.config import AppConfig
 from app.api_client import APIClient

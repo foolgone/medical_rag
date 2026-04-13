@@ -98,6 +98,32 @@ def render_rag_settings(config: AppConfig):
 
     st.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
 
+    st.selectbox(
+        "问答模式",
+        ["agent", "rag"],
+        index=["agent", "rag"].index(st.session_state.get("query_mode", "agent")),
+        key="setting_query_mode",
+        help="agent 会自动调用工具；rag 只走知识库检索增强生成"
+    )
+
+    st.caption("💡 如果你更想要稳定的知识库直答，可切到 rag；如果你需要工具能力，选 agent")
+
+    st.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
+
+    query_category = st.selectbox(
+        "问答检索分类",
+        ["all", "general", "cardiology", "endocrinology", "neurology", "other"],
+        index=["all", "general", "cardiology", "endocrinology", "neurology", "other"].index(
+            st.session_state.get("query_category", "all")
+        ),
+        key="setting_query_category",
+        help="限制问答仅检索指定分类；all 表示不过滤"
+    )
+
+    st.caption("💡 如果你只想在某一类医学文档里检索，可以先在这里限制范围")
+
+    st.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
+
     # 向量化阈值
     similarity_threshold = st.slider(
         "相似度阈值",
@@ -209,6 +235,12 @@ def save_settings():
         if 'setting_top_k' in st.session_state:
             st.session_state.top_k = st.session_state.setting_top_k
 
+        if 'setting_query_category' in st.session_state:
+            st.session_state.query_category = st.session_state.setting_query_category
+
+        if 'setting_query_mode' in st.session_state:
+            st.session_state.query_mode = st.session_state.setting_query_mode
+
         if 'setting_enable_streaming' in st.session_state:
             st.session_state.enable_streaming = st.session_state.setting_enable_streaming
 
@@ -232,7 +264,7 @@ def reset_to_defaults():
         if st.button("✅ 确认恢复", type="primary"):
             # 清除自定义设置
             keys_to_clear = [
-                'setting_api_url', 'setting_session_id', 'setting_top_k',
+                'setting_api_url', 'setting_session_id', 'setting_top_k', 'setting_query_category', 'setting_query_mode',
                 'setting_enable_streaming', 'setting_show_tool_calls'
             ]
 

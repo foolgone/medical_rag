@@ -19,12 +19,16 @@ def test_query_api():
     payload = {
         "question": "感冒应该吃什么药？",
         "session_id": "test_session",
-        "k": 3
+        "k": 3,
+        "category": "general"
     }
     response = requests.post(f"{BASE_URL}/query", json=payload)
     assert response.status_code == 200
     data = response.json()
     assert "answer" in data
+    assert "sources" in data
+    assert "tool_calls_count" in data
+    assert "debug_info" in data
     print(f"✅ 问答API测试通过")
     print(f"回答: {data['answer'][:100]}...")
 
@@ -35,6 +39,9 @@ def test_stats_api():
     assert response.status_code == 200
     data = response.json()
     assert "collection_name" in data
+    assert "total_files" in data
+    assert "vectorized_files" in data
+    assert "pending_files" in data
     print(f"✅ 统计API测试通过")
 
 

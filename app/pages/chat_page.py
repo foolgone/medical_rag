@@ -16,6 +16,8 @@ class ChatPage(BasePage):
             'api_url': state_manager.api_url,
             'session_id': state_manager.session_id,
             'top_k': state_manager.top_k,
+            'query_category': state_manager.query_category,
+            'query_mode': state_manager.query_mode,
             'enable_streaming': state_manager.enable_streaming,
             'show_tool_calls': state_manager.show_tool_calls
         }

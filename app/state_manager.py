@@ -16,14 +16,8 @@ class StateManager:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self):
-        self._initialized = False
-
     def initialize(self):
         """初始化所有会话状态"""
-        if self._initialized:
-            return
-
         # 导航状态
         if 'current_page' not in st.session_state:
             st.session_state.current_page = "chat"
@@ -46,6 +40,12 @@ class StateManager:
         if 'top_k' not in st.session_state:
             st.session_state.top_k = 5
 
+        if 'query_category' not in st.session_state:
+            st.session_state.query_category = "all"
+
+        if 'query_mode' not in st.session_state:
+            st.session_state.query_mode = "agent"
+
         if 'enable_streaming' not in st.session_state:
             st.session_state.enable_streaming = True
 
@@ -58,8 +58,6 @@ class StateManager:
 
         if 'operation_logs' not in st.session_state:
             st.session_state.operation_logs = []
-
-        self._initialized = True
 
     @property
     def current_page(self) -> str:
@@ -79,6 +77,9 @@ class StateManager:
 
     def add_message(self, role: str, content: str, **kwargs):
         """添加消息"""
+        if 'messages' not in st.session_state:
+            st.session_state.messages = []
+
         message = {
             "role": role,
             "content": content,
@@ -89,6 +90,8 @@ class StateManager:
     @staticmethod
     def clear_messages():
         """清空消息"""
+        if 'messages' not in st.session_state:
+            st.session_state.messages = []
         st.session_state.messages = []
 
     @property
@@ -106,6 +109,22 @@ class StateManager:
     @top_k.setter
     def top_k(self, value: int):
         st.session_state.top_k = value
+
+    @property
+    def query_category(self) -> str:
+        return st.session_state.get('query_category', 'all')
+
+    @query_category.setter
+    def query_category(self, value: str):
+        st.session_state.query_category = value
+
+    @property
+    def query_mode(self) -> str:
+        return st.session_state.get('query_mode', 'agent')
+
+    @query_mode.setter
+    def query_mode(self, value: str):
+        st.session_state.query_mode = value
 
     @property
     def enable_streaming(self) -> bool:
@@ -160,7 +179,7 @@ class StateManager:
     def reset_to_defaults(self):
         """恢复默认设置"""
         keys_to_clear = [
-            'setting_api_url', 'setting_session_id', 'setting_top_k',
+            'setting_api_url', 'setting_session_id', 'setting_top_k', 'setting_query_category', 'setting_query_mode',
             'setting_enable_streaming', 'setting_show_tool_calls',
             'setting_similarity_threshold', 'setting_theme',
             'setting_notifications', 'setting_auto_save'
@@ -172,6 +191,8 @@ class StateManager:
 
         # 重置为默认值
         st.session_state.top_k = 5
+        st.session_state.query_category = "all"
+        st.session_state.query_mode = "agent"
         st.session_state.enable_streaming = True
         st.session_state.show_tool_calls = True
 
@@ -185,6 +206,12 @@ class StateManager:
 
         if 'setting_top_k' in st.session_state:
             st.session_state.top_k = st.session_state.setting_top_k
+
+        if 'setting_query_category' in st.session_state:
+            st.session_state.query_category = st.session_state.setting_query_category
+
+        if 'setting_query_mode' in st.session_state:
+            st.session_state.query_mode = st.session_state.setting_query_mode
 
         if 'setting_enable_streaming' in st.session_state:
             st.session_state.enable_streaming = st.session_state.setting_enable_streaming

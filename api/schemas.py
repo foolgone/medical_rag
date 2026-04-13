@@ -2,8 +2,9 @@
 Pydantic模型定义
 用于API请求和响应的数据验证
 """
+from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict
 
 
 class QueryRequest(BaseModel):
@@ -14,12 +15,39 @@ class QueryRequest(BaseModel):
     category: Optional[str] = Field(None, description="文档分类过滤")
 
 
+class SourceItem(BaseModel):
+    """问答来源项"""
+    source: str = Field(..., description="来源文件名")
+    category: Optional[str] = Field(None, description="文档分类")
+    content: Optional[str] = Field(None, description="命中文档片段")
+    score: Optional[float] = Field(None, description="检索分数")
+    page: Optional[int] = Field(None, description="页码")
+    chunk_id: Optional[str] = Field(None, description="文档块ID")
+
+
+class ToolCallItem(BaseModel):
+    """工具调用信息"""
+    name: str = Field(..., description="工具名称")
+    args: Dict[str, Any] = Field(default_factory=dict, description="工具参数")
+
+
+class QueryDebugInfo(BaseModel):
+    """问答调试信息"""
+    requested_k: Optional[int] = Field(None, description="请求的检索数量")
+    applied_category: Optional[str] = Field(None, description="实际应用的分类过滤")
+    retrieval_count: int = Field(0, description="实际命中文档数量")
+    used_chat_mode: bool = Field(False, description="是否未命中知识库")
+
+
 class QueryResponse(BaseModel):
     """查询响应模型"""
     question: str = Field(..., description="用户问题")
     answer: str = Field(..., description="AI回答")
-    context_count: int = Field(..., description="参考文档数量")
-    sources: List[Dict] = Field(default_factory=list, description="来源文档列表")
+    session_id: Optional[str] = Field(None, description="会话ID")
+    sources: List[SourceItem] = Field(default_factory=list, description="来源文档列表")
+    tool_calls: List[ToolCallItem] = Field(default_factory=list, description="工具调用列表")
+    tool_calls_count: int = Field(0, description="工具调用次数")
+    debug_info: QueryDebugInfo = Field(default_factory=QueryDebugInfo, description="调试信息")
 
 
 class IngestRequest(BaseModel):
@@ -52,6 +80,12 @@ class StatsResponse(BaseModel):
     embedding_model: str = Field(..., description="嵌入模型")
     llm_model: str = Field(..., description="LLM模型")
     top_k: int = Field(..., description="检索数量")
+    total_files: int = Field(0, description="知识库文件总数")
+    vectorized_files: int = Field(0, description="已向量化文件数")
+    pending_files: int = Field(0, description="待向量化文件数")
+    document_chunks: int = Field(0, description="文档块数量")
+    category_count: int = Field(0, description="分类数")
+    last_updated: Optional[str] = Field(None, description="最后更新时间")
 
 
 class HealthResponse(BaseModel):

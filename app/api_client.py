@@ -11,12 +11,23 @@ class APIClient:
     def __init__(self, config: AppConfig):
         self.config = config
 
-    def query(self, question: str, session_id: str, top_k: int = 5) -> Dict:
+    def query(
+        self,
+        question: str,
+        session_id: str,
+        top_k: int = 5,
+        category: Optional[str] = None,
+        mode: str = "agent"
+    ) -> Dict:
         """标准问答"""
         try:
+            payload = {"question": question, "session_id": session_id, "k": top_k}
+            if category and category != "all":
+                payload["category"] = category
+
             response = requests.post(
-                self.config.query_url,
-                json={"question": question, "session_id": session_id, "k": top_k},
+                self.config.query_rag_url if mode == "rag" else self.config.query_url,
+                json=payload,
                 timeout=60
             )
             response.raise_for_status()
@@ -25,12 +36,23 @@ class APIClient:
             logger.error(f"查询失败: {e}")
             raise
 
-    def query_stream(self, question: str, session_id: str, top_k: int = 5) -> Generator:
+    def query_stream(
+        self,
+        question: str,
+        session_id: str,
+        top_k: int = 5,
+        category: Optional[str] = None,
+        mode: str = "agent"
+    ) -> Generator:
         """流式问答"""
         try:
+            payload = {"question": question, "session_id": session_id, "k": top_k}
+            if category and category != "all":
+                payload["category"] = category
+
             response = requests.post(
-                self.config.query_stream_url,
-                json={"question": question, "session_id": session_id, "k": top_k},
+                self.config.query_stream_rag_url if mode == "rag" else self.config.query_stream_url,
+                json=payload,
                 stream=True,
                 timeout=self.config.timeout,
                 headers={"Accept": "text/event-stream"}

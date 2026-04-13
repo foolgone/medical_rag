@@ -19,7 +19,9 @@ def handle_stream_query(api_client: APIClient, question: str, settings: dict):
         for event in api_client.query_stream(
                 question,
                 settings.get('session_id', 'default'),
-                settings.get('top_k', 5)
+                settings.get('top_k', 5),
+                settings.get('query_category'),
+                settings.get('query_mode', 'agent')
         ):
             event_type = event.get("type")
 
@@ -28,10 +30,9 @@ def handle_stream_query(api_client: APIClient, question: str, settings: dict):
                 _show_loading_status(status_placeholder, "🔧 正在调用工具...", "#4caf50")
 
             elif event_type == "retrieval":
-                docs = event.get("documents", [])
-                if docs:
-                    references = [{"filename": doc.get("metadata", {}).get("source", "未知")}
-                                  for doc in docs[:3]]
+                sources = event.get("sources", [])
+                if sources:
+                    references = [{"filename": src.get("source", "未知")} for src in sources[:3]]
 
             elif event_type == "content":
                 _show_loading_status(status_placeholder, "✍️ 正在生成回复...", "#ff9800")
@@ -42,14 +43,27 @@ def handle_stream_query(api_client: APIClient, question: str, settings: dict):
                 status_placeholder.empty()
                 content_placeholder.empty()
 
+                content = content or event.get("answer", "")
+                if not references and event.get("sources"):
+                    references = [
+                        {"filename": src.get("source", "未知")}
+                        for src in event.get("sources", [])[:3]
+                    ]
+                if not tool_calls and event.get("tool_calls"):
+                    tool_calls = event.get("tool_calls", [])
+
                 state_manager.add_message(
                     "assistant",
                     content,
                     tool_calls=tool_calls,
-                    references=references
+                    references=references,
+                    debug_info=event.get("debug_info", {})
                 )
                 st.rerun()
                 return
+
+            elif event_type == "error":
+                raise RuntimeError(event.get("error", "流式查询失败"))
 
     except Exception as e:
         status_placeholder.empty()
@@ -64,13 +78,17 @@ def handle_normal_query(api_client: APIClient, question: str, settings: dict):
             result = api_client.query(
                 question,
                 settings.get('session_id', 'default'),
-                settings.get('top_k', 5)
+                settings.get('top_k', 5),
+                settings.get('query_category'),
+                settings.get('query_mode', 'agent')
             )
 
             ai_message = {
                 "role": "assistant",
                 "content": result.get("answer", ""),
-                "tool_calls_count": result.get("tool_calls_count", 0)
+                "tool_calls": result.get("tool_calls", []),
+                "tool_calls_count": result.get("tool_calls_count", 0),
+                "debug_info": result.get("debug_info", {})
             }
 
             if result.get("sources"):
