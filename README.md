@@ -449,6 +449,16 @@ curl -X POST "http://localhost:8000/api/v1/query-rag" ^
 }
 ```
 
+## 评估闭环
+
+最小评估数据位于 `eval/qa.jsonl`，可直接运行：
+
+```bash
+python eval/run_eval.py --base-url http://localhost:8000/api/v1
+```
+
+脚本会输出命中率、引用覆盖率、低置信率和延迟统计，并将完整结果写入 `eval/latest_eval_report.json`。
+
 ## 知识库操作示例
 
 ### 导入整个目录
@@ -573,6 +583,17 @@ python tests/test_agent.py
 3. 为 `update/full(clear_first=True)` 实现真实清库
 4. 为前端设置项补齐和后端配置的联动
 5. 给检索与记忆链路增加更多集成测试
+
+## 数据来源说明
+
+当前知识库的内容主要来自以下几类数据：
+
+- `data/medical_docs/` 下的示例医疗文档
+- 公开可获得的医疗指南、科普资料和教学性文本
+- 本地演示/学习用的样本文档
+- 用户自行上传并导入的知识库文件
+
+这些数据用于医疗问答系统的检索、演示和工程验证，不代表完整临床证据链，也不保证适用于具体个体。系统输出应结合医生判断、真实病史和线下检查结果综合参考。
 
 ## 免责声明
 

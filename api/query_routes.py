@@ -1,16 +1,22 @@
 """问答相关路由 - Agent模式"""
 import asyncio
+import json
+import time
 from contextlib import asynccontextmanager
 from functools import partial
+from urllib.error import URLError
+from urllib.request import urlopen
 
 import anyio
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from api.schemas import QueryRequest, QueryResponse, HealthResponse
+
+from api.schemas import HealthCheckItem, HealthResponse, QueryRequest, QueryResponse
 from agents.medical_agent import medical_agent
 from config import settings
+from database.connection import engine
 from loguru import logger
-import json
+from sqlalchemy import text
 
 router = APIRouter(tags=["问答"])
 
@@ -35,14 +41,58 @@ async def _limited(semaphore: asyncio.Semaphore, *, purpose: str):
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
     """健康检查"""
-    return HealthResponse(status="healthy", version="2.0.0-Agent")
+    checks = {}
+    overall_status = "healthy"
+
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        checks["db"] = HealthCheckItem(status="ok", detail="SELECT 1 成功")
+    except Exception as exc:
+        checks["db"] = HealthCheckItem(status="error", detail=str(exc))
+        overall_status = "unhealthy"
+
+    try:
+        with engine.connect() as connection:
+            has_vector = connection.execute(
+                text("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')")
+            ).scalar()
+        if has_vector:
+            checks["pgvector"] = HealthCheckItem(status="ok", detail="pgvector 扩展已安装")
+        else:
+            checks["pgvector"] = HealthCheckItem(status="warn", detail="pgvector 扩展未安装或未启用")
+    except Exception as exc:
+        checks["pgvector"] = HealthCheckItem(status="warn", detail=f"检查失败: {exc}")
+
+    try:
+        ollama_base_url = settings.OLLAMA_BASE_URL.rstrip("/")
+        with urlopen(f"{ollama_base_url}/api/tags", timeout=3) as response:
+            if response.status == 200:
+                checks["ollama"] = HealthCheckItem(status="ok", detail="Ollama 可连通")
+            else:
+                checks["ollama"] = HealthCheckItem(status="warn", detail=f"Ollama 响应状态码: {response.status}")
+    except URLError as exc:
+        checks["ollama"] = HealthCheckItem(status="warn", detail=f"Ollama 不可达: {exc}")
+    except Exception as exc:
+        checks["ollama"] = HealthCheckItem(status="warn", detail=f"Ollama 检查失败: {exc}")
+
+    return HealthResponse(status=overall_status, version="2.0.0-Agent", checks=checks)
 
 @router.post("/query", response_model=QueryResponse)
-async def query(request: QueryRequest):
+async def query(request: QueryRequest, http_request: Request):
     """标准问答"""
     async with _limited(_QUERY_SEMAPHORE, purpose="query"):
+        started = time.perf_counter()
+        request_id = getattr(http_request.state, "request_id", "unknown")
         try:
-            logger.info(f"收到查询: {request.question[:50]}...")
+            logger.info(
+                "request_id={} session_id={} top_k={} category={} type=query start question={}",
+                request_id,
+                request.session_id or "default",
+                request.k,
+                request.category or "all",
+                request.question[:50],
+            )
             call = partial(
                 medical_agent.query,
                 question=request.question,
@@ -51,19 +101,44 @@ async def query(request: QueryRequest):
                 category=request.category,
             )
             result = await anyio.to_thread.run_sync(call)
+            debug_info = result.get("debug_info") or {}
+            logger.info(
+                "request_id={} session_id={} type=query done duration_ms={} retrieval_count={} top_score={} fallback_reason={}",
+                request_id,
+                request.session_id or "default",
+                int((time.perf_counter() - started) * 1000),
+                debug_info.get("retrieval_count", 0),
+                debug_info.get("best_score"),
+                debug_info.get("fallback_reason"),
+            )
             return QueryResponse(**result)
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"查询失败: {e}")
+            logger.error(
+                "request_id={} session_id={} type=query failed duration_ms={} error={}",
+                request_id,
+                request.session_id or "default",
+                int((time.perf_counter() - started) * 1000),
+                e,
+            )
             raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/query-rag", response_model=QueryResponse)
-async def query_rag(request: QueryRequest):
+async def query_rag(request: QueryRequest, http_request: Request):
     """RAG标准问答"""
     async with _limited(_QUERY_SEMAPHORE, purpose="query-rag"):
+        started = time.perf_counter()
+        request_id = getattr(http_request.state, "request_id", "unknown")
         try:
-            logger.info(f"收到RAG查询: {request.question[:50]}...")
+            logger.info(
+                "request_id={} session_id={} top_k={} category={} type=query-rag start question={}",
+                request_id,
+                request.session_id or "default",
+                request.k,
+                request.category or "all",
+                request.question[:50],
+            )
             call = partial(
                 medical_agent.rag_chain.query,
                 question=request.question,
@@ -72,11 +147,27 @@ async def query_rag(request: QueryRequest):
                 filter_dict=medical_agent.rag_chain.build_filter_dict(request.category),
             )
             result = await anyio.to_thread.run_sync(call)
+            debug_info = result.get("debug_info") or {}
+            logger.info(
+                "request_id={} session_id={} type=query-rag done duration_ms={} retrieval_count={} top_score={} fallback_reason={}",
+                request_id,
+                request.session_id or "default",
+                int((time.perf_counter() - started) * 1000),
+                debug_info.get("retrieval_count", 0),
+                debug_info.get("best_score"),
+                debug_info.get("fallback_reason"),
+            )
             return QueryResponse(**result)
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"RAG查询失败: {e}")
+            logger.error(
+                "request_id={} session_id={} type=query-rag failed duration_ms={} error={}",
+                request_id,
+                request.session_id or "default",
+                int((time.perf_counter() - started) * 1000),
+                e,
+            )
             raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/query-stream")

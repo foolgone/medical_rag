@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 500
     CHUNK_OVERLAP: int = 50
     TOP_K: int = 5
+    LOW_CONFIDENCE_THRESHOLD: float = 0.35
+
+    # 评估配置
+    EVAL_DATA_DIR: str = "eval"
+    EVAL_API_TIMEOUT_SEC: float = 60.0
     
     # API配置
     API_HOST: str = "0.0.0.0"

@@ -221,10 +221,13 @@ class KnowledgeBaseUpdateService:
 
     def _activate_file_record(self, record_id: int, doc_ids: List[str]) -> None:
         """激活新版本，并让旧版本失效。"""
+        record_filepath = None
         with get_db_session() as db:
             record = db.query(KnowledgeBaseFile).filter(KnowledgeBaseFile.id == record_id).first()
             if not record:
                 return
+
+            record_filepath = record.filepath
 
             previous_versions = db.query(KnowledgeBaseFile) \
                 .filter(KnowledgeBaseFile.source_id == record.source_id) \
@@ -249,8 +252,8 @@ class KnowledgeBaseUpdateService:
             record.ingested_at = datetime.utcnow()
             record.error_message = None
 
-        if self.rag_chain.document_loader.md5_checker and not self.rag_chain.document_loader.md5_checker.check_file_exists(record.filepath):
-            self.rag_chain.document_loader.md5_checker.add_file_record(record.filepath)
+        if record_filepath and self.rag_chain.document_loader.md5_checker and not self.rag_chain.document_loader.md5_checker.check_file_exists(record_filepath):
+            self.rag_chain.document_loader.md5_checker.add_file_record(record_filepath)
 
     def _find_latest_restorable_version(self, source_id: str) -> Optional[int]:
         """找到某个逻辑文件当前可恢复的最新版本。"""

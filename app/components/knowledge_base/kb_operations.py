@@ -44,16 +44,31 @@ def _get_knowledge_base_stats(api_client: APIClient) -> dict:
 
 def _render_stats_card(stats: dict):
     """渲染统计卡片"""
+    total_files = int(stats.get('total_files', 0) or 0)
+    vectorized_files = int(stats.get('vectorized_files', 0) or 0)
+    pending_files = int(stats.get('pending_files', 0) or 0)
+    total_versions = int(stats.get('total_versions', 0) or 0)
+    active_versions = int(stats.get('active_versions', 0) or 0)
+    failed_jobs = int(stats.get('failed_jobs', 0) or 0)
+
+    if total_files == 0:
+        status_note = "<span style='color:#8c8c8c;'>当前还没有导入文件，请先上传文档。</span>"
+    else:
+        status_note = f"<span style='color:#1677ff;'>当前知识库正常，已导入 {total_files} 个文件。</span>"
+
     st.markdown(f"""
     <div style="padding: 1rem; background: #f0f9ff; border-radius: 0.5rem; border-left: 4px solid #1677ff;">
         <p style="margin: 0; font-size: 0.9rem;"><strong>📊 知识库状态</strong></p>
-        <p style="margin: 0.5rem 0 0 0; font-size: 0.85rem; color: #666;">
-            总文件: {stats.get('total_files', 0)}<br>
-            已向量化: <span style="color: #52c41a;">{stats.get('vectorized_files', 0)}</span><br>
-            未向量化: <span style="color: #999;">{stats.get('pending_files', 0)}</span><br>
-            总版本数: {stats.get('total_versions', 0)}<br>
-            当前生效版本: {stats.get('active_versions', 0)}<br>
-            失败任务: <span style="color: #ff4d4f;">{stats.get('failed_jobs', 0)}</span>
+        <p style="margin: 0.45rem 0 0.7rem 0; font-size: 0.82rem; line-height: 1.5;">
+            {status_note}
+        </p>
+        <p style="margin: 0; font-size: 0.85rem; color: #666; line-height: 1.6;">
+            总文件: <strong>{total_files}</strong><br>
+            已向量化: <span style="color: #52c41a; font-weight: 600;">{vectorized_files}</span><br>
+            未向量化: <span style="color: #999;">{pending_files}</span><br>
+            总版本数: <strong>{total_versions}</strong><br>
+            当前生效版本: <strong>{active_versions}</strong><br>
+            失败任务: <span style="color: #ff4d4f; font-weight: 600;">{failed_jobs}</span>
         </p>
     </div>
     """, unsafe_allow_html=True)

@@ -18,7 +18,8 @@ class MedicalRetriever:
         self,
         vector_store: MedicalVectorStore = None,
         k: int = None,
-        score_threshold: float = 0.7
+        score_threshold: float = 0.7,
+        low_confidence_threshold: float = None
     ):
         """
         初始化检索器
@@ -31,10 +32,17 @@ class MedicalRetriever:
         self.vector_store = vector_store or MedicalVectorStore()
         self.k = k or settings.TOP_K
         self.score_threshold = score_threshold
-        self.hybrid_threshold = 0.35
+        self.hybrid_threshold = (
+            low_confidence_threshold
+            if low_confidence_threshold is not None
+            else getattr(settings, "LOW_CONFIDENCE_THRESHOLD", 0.35)
+        )
         self.keyword_retriever = LightweightBM25Retriever(self.vector_store)
         self.reranker = LightweightReranker(top_k=self.k)
-        logger.info(f"检索器初始化完成 - k: {self.k}, threshold: {self.score_threshold}")
+        logger.info(
+            f"检索器初始化完成 - k: {self.k}, threshold: {self.score_threshold}, "
+            f"low_confidence_threshold: {self.hybrid_threshold}"
+        )
 
     @staticmethod
     def _normalize_score(raw_score: Optional[float]) -> Optional[float]:

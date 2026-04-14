@@ -77,6 +77,19 @@ class QueryResponse(BaseModel):
     debug_info: QueryDebugInfo = Field(default_factory=QueryDebugInfo, description="调试信息")
 
 
+class HealthCheckItem(BaseModel):
+    """健康检查子项"""
+    status: str = Field(..., description="检查状态")
+    detail: Optional[str] = Field(None, description="检查详情")
+
+
+class HealthResponse(BaseModel):
+    """健康检查响应模型"""
+    status: str = Field(..., description="服务状态")
+    version: str = Field(..., description="版本号")
+    checks: Dict[str, HealthCheckItem] = Field(default_factory=dict, description="依赖检查结果")
+
+
 class IngestRequest(BaseModel):
     """文档导入请求模型"""
     data_dir: Optional[str] = Field("data/medical_docs", description="文档目录")
