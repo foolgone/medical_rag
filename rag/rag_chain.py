@@ -5,6 +5,8 @@ RAG链核心逻辑
 from datetime import datetime
 from typing import AsyncGenerator, Dict, List, Optional
 from pathlib import Path
+import threading
+import time
 from langchain_core.documents import Document
 from rag.document_loader import MedicalDocumentLoader
 from rag.md5_checker import MD5Checker
@@ -13,9 +15,11 @@ from rag.vector_store import MedicalVectorStore, MedicalEmbeddings
 from rag.retriever import MedicalRetriever
 from llm.ollama_client import MedicalLLMClient
 from database.connection import get_db_session
-from database.models import ConversationHistory
+from database.models import ConversationHistory, KnowledgeBaseFile, KnowledgeBaseIngestJob
+from sqlalchemy import func
 from loguru import logger
 import uuid
+from config import settings
 
 
 class MedicalRAGChain:
@@ -32,6 +36,11 @@ class MedicalRAGChain:
         self.vector_store = MedicalVectorStore(embeddings=self.embeddings)
         self.retriever = MedicalRetriever(vector_store=self.vector_store)
         self.llm_client = MedicalLLMClient()
+
+        # 第9步MVP：stats 短TTL缓存
+        self._stats_cache_lock = threading.Lock()
+        self._stats_cache_value: Optional[Dict] = None
+        self._stats_cache_expires_at: float = 0.0
         
         logger.info("医疗RAG链初始化完成")
 
@@ -87,28 +96,12 @@ class MedicalRAGChain:
             导入的文档数量
         """
         try:
+            from rag.knowledge_base_update import KnowledgeBaseUpdateService
+
             logger.info(f"开始导入文档，目录: {data_dir or 'default'}")
-            
-            # 加载文档
-            if data_dir:
-                self.document_loader.data_dir = Path(data_dir)
-            documents, success_count, skip_count = self.document_loader.load_directory()
-            
-            if not documents:
-                logger.warning("没有找到可导入的文档")
-                return 0
-            
-            # 添加元数据
-            documents = self.document_loader.add_metadata(documents, category)
-            
-            # 分割文档
-            split_docs = self.text_splitter.split_documents(documents)
-            
-            # 存储到向量数据库
-            doc_ids = self.vector_store.add_documents(split_docs)
-            
-            logger.info(f"成功导入 {len(doc_ids)} 个文档块到知识库")
-            return len(doc_ids)
+            result = KnowledgeBaseUpdateService(self).incremental_update(data_dir=data_dir, category=category)
+            logger.info(f"知识库导入完成: {result}")
+            return int(result.get("ingested_count", 0))
         except Exception as e:
             logger.error(f"文档导入失败: {e}")
             raise
@@ -439,43 +432,131 @@ class MedicalRAGChain:
             统计信息字典
         """
         try:
-            supported_extensions = {".pdf", ".docx", ".txt"}
-            data_dir = self.document_loader.data_dir
-            files = [
-                file_path for file_path in data_dir.rglob("*")
-                if file_path.is_file() and file_path.suffix.lower() in supported_extensions
-            ]
+            # 短TTL缓存：避免前端频繁刷新 stats 压垮 DB
+            if getattr(settings, "ENABLE_STATS_CACHE", True):
+                ttl_sec = max(int(getattr(settings, "STATS_CACHE_TTL_SEC", 15)), 0)
+                if ttl_sec > 0:
+                    # 兼容 tests 中通过 __new__ 构造的实例
+                    if not hasattr(self, "_stats_cache_lock"):
+                        self._stats_cache_lock = threading.Lock()
+                        self._stats_cache_value = None
+                        self._stats_cache_expires_at = 0.0
 
-            # 统计接口需要读取最新的MD5记录，避免复用初始化时的缓存状态。
-            md5_checker = MD5Checker()
+                    now = time.time()
+                    with self._stats_cache_lock:
+                        cached = getattr(self, "_stats_cache_value", None)
+                        expires_at = float(getattr(self, "_stats_cache_expires_at", 0.0) or 0.0)
+                        if isinstance(cached, dict) and expires_at > now:
+                            logger.debug(
+                                "stats cache hit, expires_in_sec={}",
+                                round(expires_at - now, 3),
+                            )
+                            return cached
+
+            category_breakdown: Dict[str, int] = {}
+            total_files = 0
             vectorized_files = 0
-            categories = set()
+            pending_files = 0
+            document_chunks = 0
+            category_count = 0
             last_updated = None
+            total_versions = 0
+            active_versions = 0
+            latest_version_time = None
+            failed_jobs = 0
+            try:
+                with get_db_session() as db:
+                    non_deleted_query = db.query(KnowledgeBaseFile) \
+                        .filter(KnowledgeBaseFile.status != "deleted")
 
-            for file_path in files:
-                if md5_checker.check_file_exists(str(file_path)):
-                    vectorized_files += 1
+                    total_versions = non_deleted_query.count()
+                    active_records = db.query(KnowledgeBaseFile) \
+                        .filter(KnowledgeBaseFile.is_current.is_(True)) \
+                        .filter(KnowledgeBaseFile.status == "active") \
+                        .all()
+                    active_versions = len(active_records)
+                    vectorized_files = active_versions
+                    document_chunks = sum(record.chunk_count or 0 for record in active_records)
 
-                category = file_path.parent.name if file_path.parent != data_dir else "general"
-                categories.add(category)
+                    total_files = db.query(func.count(func.distinct(KnowledgeBaseFile.source_id))) \
+                        .filter(KnowledgeBaseFile.status != "deleted") \
+                        .scalar() or 0
+                    pending_files = max(int(total_files) - active_versions, 0)
 
-                modified_at = datetime.fromtimestamp(file_path.stat().st_mtime)
-                if last_updated is None or modified_at > last_updated:
-                    last_updated = modified_at
+                    category_rows = db.query(
+                        KnowledgeBaseFile.category,
+                        func.count(func.distinct(KnowledgeBaseFile.source_id)),
+                    ).filter(KnowledgeBaseFile.status != "deleted") \
+                     .group_by(KnowledgeBaseFile.category) \
+                     .all()
+                    category_breakdown = {
+                        category or "general": int(count or 0)
+                        for category, count in category_rows
+                    }
+                    category_count = len(category_breakdown)
 
-            total_files = len(files)
+                    latest_file = db.query(KnowledgeBaseFile) \
+                        .filter(KnowledgeBaseFile.status != "deleted") \
+                        .order_by(KnowledgeBaseFile.updated_at.desc()) \
+                        .first()
+                    latest_version_time = latest_file.updated_at if latest_file else None
+                    if latest_file:
+                        last_updated = latest_file.ingested_at or latest_file.updated_at
+                    failed_jobs = db.query(KnowledgeBaseIngestJob) \
+                        .filter(KnowledgeBaseIngestJob.status == "failed") \
+                        .count()
+            except Exception as governance_error:
+                logger.warning(f"读取知识库治理统计失败，回退到文件系统统计: {governance_error}")
+                supported_extensions = {".pdf", ".docx", ".txt"}
+                data_dir = self.document_loader.data_dir
+                files = [
+                    file_path for file_path in data_dir.rglob("*")
+                    if file_path.is_file() and file_path.suffix.lower() in supported_extensions
+                ]
+                md5_checker = MD5Checker()
+
+                for file_path in files:
+                    if md5_checker.check_file_exists(str(file_path)):
+                        vectorized_files += 1
+
+                    category = file_path.parent.name if file_path.parent != data_dir else "general"
+                    category_breakdown[category] = category_breakdown.get(category, 0) + 1
+
+                    modified_at = datetime.fromtimestamp(file_path.stat().st_mtime)
+                    if last_updated is None or modified_at > last_updated:
+                        last_updated = modified_at
+
+                total_files = len(files)
+                pending_files = max(total_files - vectorized_files, 0)
+                category_count = len(category_breakdown)
+                document_chunks = self.vector_store.count_documents()
+
             stats = {
                 "collection_name": self.vector_store.collection_name,
                 "embedding_model": self.embeddings.model_name,
                 "llm_model": self.llm_client.model_name,
                 "top_k": self.retriever.k,
-                "total_files": total_files,
+                "total_files": int(total_files),
                 "vectorized_files": vectorized_files,
-                "pending_files": max(total_files - vectorized_files, 0),
-                "document_chunks": self.vector_store.count_documents(),
-                "category_count": len(categories),
+                "pending_files": pending_files,
+                "document_chunks": document_chunks,
+                "category_count": category_count,
                 "last_updated": last_updated.isoformat() if last_updated else None,
+                "category_breakdown": category_breakdown,
+                "total_versions": total_versions,
+                "active_versions": active_versions,
+                "latest_version_time": latest_version_time.isoformat() if latest_version_time else None,
+                "failed_jobs": failed_jobs,
             }
+
+            if getattr(settings, "ENABLE_STATS_CACHE", True):
+                ttl_sec = max(int(getattr(settings, "STATS_CACHE_TTL_SEC", 15)), 0)
+                if ttl_sec > 0:
+                    if not hasattr(self, "_stats_cache_lock"):
+                        self._stats_cache_lock = threading.Lock()
+                    with self._stats_cache_lock:
+                        self._stats_cache_value = stats
+                        self._stats_cache_expires_at = time.time() + ttl_sec
             return stats
         except Exception as e:
             logger.error(f"获取统计信息失败: {e}")

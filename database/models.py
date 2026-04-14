@@ -2,7 +2,7 @@
 数据库模型定义
 使用PostgreSQL + pgvector存储向量嵌入
 """
-from sqlalchemy import Column, Float, Integer, String, Text, DateTime, func
+from sqlalchemy import Boolean, Column, Float, Integer, String, Text, DateTime, func
 from sqlalchemy.orm import declarative_base
 from pgvector.sqlalchemy import Vector
 
@@ -83,4 +83,57 @@ class ConversationSummary(Base):
         return (
             f"<ConversationSummary(id={self.id}, session_id='{self.session_id}', "
             f"range={self.start_history_id}-{self.end_history_id})>"
+        )
+
+
+class KnowledgeBaseFile(Base):
+    """知识库文件生命周期表"""
+    __tablename__ = "knowledge_base_files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_id = Column(String(64), nullable=False, index=True, comment="逻辑源文件ID")
+    filename = Column(String(500), nullable=False, comment="当前文件名")
+    filepath = Column(String(1000), nullable=False, index=True, comment="文件物理路径")
+    logical_name = Column(String(500), nullable=False, comment="逻辑文件名")
+    category = Column(String(200), nullable=False, index=True, comment="文档分类")
+    source_type = Column(String(50), nullable=False, comment="文件类型")
+    file_hash = Column(String(64), nullable=False, index=True, comment="文件哈希")
+    version = Column(Integer, nullable=False, default=1, comment="版本号")
+    status = Column(String(30), nullable=False, default="active", index=True, comment="状态")
+    is_current = Column(Boolean, nullable=False, default=True, comment="是否当前有效版本")
+    chunk_count = Column(Integer, nullable=False, default=0, comment="向量块数量")
+    vector_ids = Column(Text, comment="向量文档ID列表(JSON)")
+    error_message = Column(Text, comment="失败原因")
+    uploaded_at = Column(DateTime, server_default=func.now(), comment="上传时间")
+    ingested_at = Column(DateTime, comment="入库时间")
+    created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
+
+    def __repr__(self):
+        return (
+            f"<KnowledgeBaseFile(id={self.id}, source_id='{self.source_id}', "
+            f"version={self.version}, status='{self.status}')>"
+        )
+
+
+class KnowledgeBaseIngestJob(Base):
+    """知识库导入任务日志表"""
+    __tablename__ = "knowledge_base_ingest_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_type = Column(String(30), nullable=False, index=True, comment="任务类型")
+    status = Column(String(30), nullable=False, index=True, comment="任务状态")
+    source_id = Column(String(64), index=True, comment="逻辑源文件ID")
+    file_id = Column(Integer, index=True, comment="关联文件记录ID")
+    file_hash = Column(String(64), index=True, comment="文件哈希")
+    version = Column(Integer, comment="版本号")
+    chunk_count = Column(Integer, nullable=False, default=0, comment="入库块数")
+    message = Column(Text, comment="结果消息")
+    started_at = Column(DateTime, server_default=func.now(), comment="开始时间")
+    finished_at = Column(DateTime, comment="结束时间")
+
+    def __repr__(self):
+        return (
+            f"<KnowledgeBaseIngestJob(id={self.id}, job_type='{self.job_type}', "
+            f"status='{self.status}')>"
         )

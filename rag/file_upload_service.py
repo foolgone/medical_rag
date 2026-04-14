@@ -5,12 +5,15 @@
 import os
 import re
 import shutil
+from hashlib import md5
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 from fastapi import UploadFile, HTTPException
 from loguru import logger
 from rag.md5_checker import MD5Checker
+from database.connection import get_db_session
+from database.models import KnowledgeBaseFile
 
 
 class FileUploadService:
@@ -30,6 +33,92 @@ class FileUploadService:
         self.upload_dir = Path(upload_dir)
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"文件上传服务初始化完成，目录: {self.upload_dir}")
+
+    @staticmethod
+    def normalize_logical_name(filename: str) -> str:
+        """将物理文件名归一为逻辑文件名，忽略上传冲突追加的数字后缀。"""
+        path = Path(filename or "uploaded_file.txt")
+        stem = re.sub(r"_\d+$", "", path.stem)
+        suffix = path.suffix.lower() or ".txt"
+        return f"{stem}{suffix}"
+
+    @classmethod
+    def build_source_id(cls, filename: str, category: str = "general") -> str:
+        """基于逻辑文件名和分类构建稳定 source_id。"""
+        logical_name = cls.normalize_logical_name(filename).lower()
+        source_key = f"{category.lower()}::{logical_name}"
+        return f"src_{md5(source_key.encode('utf-8')).hexdigest()[:16]}"
+
+    @staticmethod
+    def compute_file_hash(file_path: str) -> str:
+        """计算文件哈希。"""
+        return MD5Checker.get_file_md5(file_path)
+
+    def build_file_identity(
+        self,
+        file_path: Path,
+        category: str,
+        original_filename: Optional[str] = None
+    ) -> Dict[str, str]:
+        """生成文件身份信息。"""
+        logical_name = self.normalize_logical_name(original_filename or file_path.name)
+        return {
+            "source_id": self.build_source_id(logical_name, category),
+            "logical_name": logical_name,
+            "file_hash": self.compute_file_hash(str(file_path)),
+            "source_type": file_path.suffix.lower().lstrip(".") or "unknown",
+        }
+
+    def _upsert_uploaded_file_record(
+        self,
+        file_path: Path,
+        category: str,
+        original_filename: Optional[str] = None
+    ) -> Dict[str, object]:
+        """在治理表中登记上传文件。"""
+        identity = self.build_file_identity(file_path, category, original_filename)
+        with get_db_session() as db:
+            existing = db.query(KnowledgeBaseFile) \
+                .filter(KnowledgeBaseFile.filepath == str(file_path)) \
+                .first()
+
+            if existing:
+                existing.filename = file_path.name
+                existing.category = category
+                existing.logical_name = identity["logical_name"]
+                existing.source_type = identity["source_type"]
+                existing.file_hash = identity["file_hash"]
+                existing.status = existing.status or "uploaded"
+                existing.error_message = None
+                db.flush()
+                version = existing.version
+                record_id = existing.id
+            else:
+                latest = db.query(KnowledgeBaseFile) \
+                    .filter(KnowledgeBaseFile.source_id == identity["source_id"]) \
+                    .order_by(KnowledgeBaseFile.version.desc()) \
+                    .first()
+                version = (latest.version + 1) if latest else 1
+
+                record = KnowledgeBaseFile(
+                    source_id=identity["source_id"],
+                    filename=file_path.name,
+                    filepath=str(file_path),
+                    logical_name=identity["logical_name"],
+                    category=category,
+                    source_type=identity["source_type"],
+                    file_hash=identity["file_hash"],
+                    version=version,
+                    status="uploaded",
+                    is_current=False,
+                )
+                db.add(record)
+                db.flush()
+                record_id = record.id
+
+        identity["version"] = version
+        identity["file_record_id"] = record_id
+        return identity
     
     def validate_file(self, file: UploadFile) -> None:
         """
@@ -114,13 +203,28 @@ class FileUploadService:
                 shutil.copyfileobj(file.file, buffer)
             
             logger.info(f"文件上传成功: {file_path.name}, 大小: {file_path.stat().st_size / 1024:.2f}KB")
+            try:
+                identity = self._upsert_uploaded_file_record(
+                    file_path=file_path,
+                    category=category,
+                    original_filename=original_filename,
+                )
+            except Exception as governance_error:
+                logger.warning(f"登记知识库文件治理信息失败，回退到本地身份信息: {governance_error}")
+                identity = self.build_file_identity(file_path=file_path, category=category, original_filename=original_filename)
+                identity["version"] = 1
+                identity["file_record_id"] = None
             
             return {
                 "filename": file_path.name,
                 "filepath": str(file_path),
                 "category": category,
                 "size": file_path.stat().st_size,
-                "success": True
+                "success": True,
+                "source_id": identity["source_id"],
+                "file_hash": identity["file_hash"],
+                "version": identity["version"],
+                "status": "uploaded",
             }
         except HTTPException:
             raise
@@ -168,6 +272,16 @@ class FileUploadService:
             file_path = self.upload_dir / category / filename
             if file_path.exists():
                 file_path.unlink()
+                try:
+                    with get_db_session() as db:
+                        record = db.query(KnowledgeBaseFile) \
+                            .filter(KnowledgeBaseFile.filepath == str(file_path)) \
+                            .first()
+                        if record:
+                            record.status = "deleted"
+                            record.is_current = False
+                except Exception as db_error:
+                    logger.warning(f"更新文件治理状态失败: {db_error}")
                 logger.info(f"文件删除成功: {filename}")
                 return True
             else:
@@ -187,19 +301,56 @@ class FileUploadService:
         Returns:
             文件信息列表
         """
-        files = []
-        md5_checker = MD5Checker()
-        
+        files: List[Dict] = []
+        seen_paths = set()
+        try:
+            with get_db_session() as db:
+                query = db.query(KnowledgeBaseFile)
+                if category:
+                    query = query.filter(KnowledgeBaseFile.category == category)
+                registry_rows = query \
+                    .filter(KnowledgeBaseFile.status != "deleted") \
+                    .order_by(
+                        KnowledgeBaseFile.updated_at.desc(),
+                        KnowledgeBaseFile.version.desc(),
+                        KnowledgeBaseFile.id.desc(),
+                    ) \
+                    .all()
+
+                for row in registry_rows:
+                    seen_paths.add(row.filepath)
+                    file_path = Path(row.filepath)
+                    size = file_path.stat().st_size if file_path.exists() else 0
+                    upload_time = row.uploaded_at or row.updated_at or row.created_at
+                    files.append({
+                        "filename": row.filename,
+                        "category": row.category,
+                        "size": size,
+                        "path": row.filepath,
+                        "filepath": row.filepath,
+                        "upload_time": upload_time.strftime("%Y-%m-%d %H:%M:%S") if upload_time else None,
+                        "status": row.status,
+                        "source_id": row.source_id,
+                        "file_hash": row.file_hash,
+                        "version": row.version,
+                        "is_current": row.is_current,
+                    })
+        except Exception as e:
+            logger.warning(f"读取知识库文件治理信息失败，回退到文件系统列表: {e}")
+
         if category:
             search_dirs = [self.upload_dir / category]
         else:
             search_dirs = [self.upload_dir]
-        
+
+        md5_checker = MD5Checker()
         for search_dir in search_dirs:
             if search_dir.exists():
                 for file_path in search_dir.rglob('*'):
                     if file_path.is_file() and file_path.suffix.lower() in self.ALLOWED_EXTENSIONS:
                         normalized_path = str(file_path)
+                        if normalized_path in seen_paths:
+                            continue
                         files.append({
                             "filename": file_path.name,
                             "category": file_path.parent.name,
@@ -207,7 +358,19 @@ class FileUploadService:
                             "path": normalized_path,
                             "filepath": normalized_path,
                             "upload_time": datetime.fromtimestamp(file_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-                            "status": "vectorized" if md5_checker.check_file_exists(normalized_path) else "pending"
+                            "status": "active" if md5_checker.check_file_exists(normalized_path) else "uploaded",
+                            "source_id": self.build_source_id(file_path.name, file_path.parent.name),
+                            "file_hash": self.compute_file_hash(normalized_path),
+                            "version": None,
+                            "is_current": None,
                         })
-        
+
         return files
+
+    def get_version_history(self, source_id: str) -> List[KnowledgeBaseFile]:
+        """读取指定逻辑文件的所有版本历史。"""
+        with get_db_session() as db:
+            return db.query(KnowledgeBaseFile) \
+                .filter(KnowledgeBaseFile.source_id == source_id) \
+                .order_by(KnowledgeBaseFile.version.desc(), KnowledgeBaseFile.updated_at.desc()) \
+                .all()

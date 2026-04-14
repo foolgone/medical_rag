@@ -15,7 +15,11 @@ def render_chat_input(api_client: APIClient, settings: dict):
     )
 
     if question:
-        handle_user_message(api_client, question, settings)
+        # 先把用户消息写入并触发一次 rerun，让 UI 先渲染历史与占位；
+        # 下一轮再处理耗时请求，避免出现“提交后界面发白/空白感”。
+        state_manager.add_message("user", question)
+        st.session_state.pending_chat_question = question
+        st.rerun()
 
     _render_disclaimer()
 

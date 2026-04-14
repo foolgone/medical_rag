@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8000
     DEBUG: bool = True
+
+    # 第9步：缓存/并发/可观测性（MVP）
+    ENABLE_STATS_CACHE: bool = True
+    STATS_CACHE_TTL_SEC: int = 15
+
+    API_MAX_CONCURRENT_QUERIES: int = 4
+    API_MAX_CONCURRENT_STREAMS: int = 2
+    API_CONCURRENCY_ACQUIRE_TIMEOUT_SEC: float = 0.01
     
     # 日志配置
     LOG_LEVEL: str = "INFO"

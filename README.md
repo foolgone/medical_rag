@@ -1,671 +1,537 @@
-# 🏥 医疗RAG问答系统
+# 医疗 Agent RAG 系统
 
-> 📸 **项目演示截图**
-> 
-> ![系统架构图](./images/img.png)
-> ![系统界面](./images/img_1.png)
-> 
-> *项目截图位于 `images/` 目录下*
+![系统架构图](./images/img.png)
+![系统界面](./images/img_1.png)
 
-基于 LangChain、Ollama 和 PostgreSQL 的智能医疗文档检索增强生成系统，支持 RAG 检索问答和智能聊天双模式。
+一个基于 `FastAPI + Streamlit + LangChain + LangGraph + Ollama + PostgreSQL/pgvector` 的本地医疗知识问答项目。它同时提供两条主链路：
 
-## ✨ 核心功能
+- `Agent` 模式：先检索知识库，再由 Tool Calling Agent 按需调用医疗工具与检索工具完成回答
+- `RAG` 模式：直接走混合检索 + 上下文生成，适合更稳定的知识库直答
 
-- 📚 **文档管理**：支持 PDF、Word、TXT 格式的医疗文档导入
-- 📤 **文件上传**：支持单文件和批量文件上传，自动导入知识库
-- 🔍 **智能检索**：基于语义的向量相似度搜索
-- 🔄 **MD5 去重**：自动检测重复文档，避免重复导入
-- 💬 **双模式问答**：
-  - RAG 模式：基于检索到的文档生成专业回答
-  - 聊天模式：无相关文档时直接调用 LLM 智能对话
-- 🔄 **多轮对话**：保留对话历史，支持上下文理解
-- 📊 **对话管理**：自动保存对话记录到数据库
-- 🔄 **知识库更新**：支持增量更新和全量更新
-- 📈 **进度显示**：文件上传和导入过程实时进度反馈
-- 🌐 **双界面支持**：
-  - FastAPI RESTful API（支持交互式文档）
-  - Streamlit Web 前端界面（模块化架构）
-- ⚡ **性能优化**：
-  - API 客户端缓存
-  - 统计数据缓存（30秒）
-  - 消息列表分页显示（默认50条）
-  - 文件列表分页显示（默认10个/页）
+当前代码已经具备知识库导入、混合检索、流式问答、会话记忆、文件上传、增量更新和前端管理页面等完整闭环。
 
-## 🏗️ 技术架构
+## 项目亮点
 
-### 技术栈
+- 双问答模式
+  - `/query`、`/query-stream` 走 Agent
+  - `/query-rag`、`/query-stream-rag` 走纯 RAG
+- 混合检索链路
+  - PGVector 语义召回
+  - 轻量 BM25 关键词召回
+  - 线性融合重排
+  - 低置信命中提示
+- 分层记忆
+  - 短期记忆：最近几轮原始对话
+  - 事实记忆：年龄、性别、病史、药物、过敏、持续症状
+  - 摘要记忆：长会话阶段摘要
+- 知识库管理
+  - 支持 `PDF / DOCX / TXT`
+  - MD5 去重
+  - 单文件上传、批量上传
+  - 增量更新、全量更新
+  - 文件状态查看：`pending / vectorized`
+- 前端可直接操作
+  - 聊天页
+  - 知识库页
+  - 设置页
+  - 流式输出
+  - 工具调用展示
+  - 来源片段展示
 
-| 组件 | 技术 | 版本 |
-|------|------|------|
-| **后端框架** | FastAPI | latest |
-| **RAG框架** | LangChain | latest |
-| **LLM** | Ollama (qwen2.5:7b) | latest |
-| **嵌入模型** | Ollama (bge-m3) | latest |
-| **向量数据库** | PostgreSQL + pgvector | latest |
-| **前端框架** | Streamlit | latest |
-| **前端架构** | 模块化组件设计 | v2.0 |
-| **Python版本** | Python | 3.11+ |
+## 实际技术栈
 
-### 项目结构
+| 层 | 实现 |
+| --- | --- |
+| API | FastAPI |
+| 前端 | Streamlit |
+| Agent | LangChain `create_agent` + LangGraph checkpoint |
+| LLM | Ollama `qwen2.5:7b` |
+| Embedding | Ollama `bag-m3:latest` |
+| 向量库 | PostgreSQL + pgvector + `langchain-postgres` |
+| 文档处理 | `pypdf`、`docx2txt`、`langchain-community` |
+| 日志 | Loguru |
 
-```
+说明：
+
+- 代码和 `.env.example` 当前默认嵌入模型写的是 `bag-m3:latest`
+- 如果你本地实际安装的是别的 Ollama embedding 模型，请把 `.env` 里的 `EMBEDDING_MODEL` 改成你的真实模型名
+
+## 系统架构
+
+### 1. 问答链路
+
+`Agent` 模式：
+
+1. 读取 PostgreSQL 中的短期记忆、事实记忆、摘要记忆
+2. 执行混合检索，提前拿到候选文档
+3. 将记忆和检索上下文一起注入 Agent
+4. Agent 按需调用工具
+5. 保存问答记录，并抽取事实记忆、阶段摘要
+
+`RAG` 模式：
+
+1. 执行混合检索
+2. 命中知识库时走 `generate_with_context`
+3. 没命中时回退到聊天模式
+4. 保存会话历史
+
+### 2. 检索链路
+
+项目当前不是“只有向量检索”，而是这套组合：
+
+1. `MedicalVectorStore.similarity_search_with_score`
+2. `LightweightBM25Retriever` 对已入库文本块做关键词召回
+3. `LightweightReranker` 融合向量分数、关键词分数、词项重叠
+4. 对低置信命中返回显式提示
+
+### 3. 数据存储
+
+PostgreSQL 中主要会看到这些数据：
+
+- `langchain_pg_collection` / `langchain_pg_embedding`
+  - LangChain PGVector 使用的向量表
+- `conversation_history`
+  - 问答历史
+- `patient_fact_memory`
+  - 事实记忆
+- `conversation_summary`
+  - 阶段摘要
+
+## 目录结构
+
+```text
 Medical_rag/
-├── api/                    # API路由模块
-│   ├── __init__.py
-│   ├── routes.py          # FastAPI路由定义
-│   ├── file_routes.py     # 文件上传路由
-│   ├── knowledge_routes.py # 知识库路由
-│   ├── query_routes.py    # 查询路由
-│   └── schemas.py         # Pydantic数据模型
-├── database/              # 数据库模块
-│   ├── __init__.py
-│   ├── connection.py      # 数据库连接管理
-│   └── models.py          # SQLAlchemy数据模型
-├── rag/                   # RAG核心模块
-│   ├── __init__.py
-│   ├── document_loader.py # 文档加载器（PDF/Word/TXT）
-│   ├── text_splitter.py   # 智能文本分割器
-│   ├── vector_store.py    # 向量存储管理
-│   ├── retriever.py       # 文档检索器
-│   ├── rag_chain.py       # RAG链核心逻辑
-│   ├── md5_checker.py     # MD5去重校验器
-│   ├── file_upload_service.py  # 文件上传服务
-│   └── knowledge_base_update.py # 知识库更新服务
-├── llm/                   # LLM客户端模块
-│   ├── __init__.py
-│   └── ollama_client.py   # Ollama API客户端
-├── app/                   # 前端应用模块（v2.0 模块化架构）
-│   ├── __init__.py
-│   ├── config.py          # 前端配置
-│   ├── api_client.py      # API客户端（带缓存）
-│   ├── state_manager.py   # 状态管理器（单例模式）
-│   ├── styles.py          # 样式管理器
-│   ├── utils.py           # 工具函数
-│   ├── components/        # UI组件层
-│   │   ├── __init__.py
-│   │   ├── base_component.py   # 组件基类
-│   │   ├── navigation.py       # 导航组件
-│   │   ├── settings.py         # 设置组件
-│   │   ├── chat_area/          # 聊天区域（模块化）
-│   │   │   ├── __init__.py
-│   │   │   ├── chat_container.py    # 主容器
-│   │   │   ├── chat_header.py       # 头部操作栏
-│   │   │   ├── message_display.py   # 消息显示
-│   │   │   ├── chat_input.py        # 输入区域
-│   │   │   ├── chat_handlers.py     # 消息处理
-│   │   │   └── chat_helpers.py      # 辅助函数
-│   │   └── knowledge_base/     # 知识库（模块化）
-│   │       ├── __init__.py
-│   │       ├── kb_container.py      # 主容器
-│   │       ├── file_upload.py       # 文件上传
-│   │       ├── kb_operations.py     # 知识库操作
-│   │       ├── file_list.py         # 文件列表
-│   │       ├── file_item.py         # 文件项
-│   │       └── kb_logs.py           # 操作日志
-│   ├── pages/             # 页面层
-│   │   ├── __init__.py
-│   │   ├── base_page.py       # 页面基类
-│   │   ├── chat_page.py       # 聊天页面
-│   │   ├── knowledge_page.py  # 知识库页面
-│   │   └── settings_page.py   # 设置页面
-│   └── widgets/           # 小组件库
-│       ├── __init__.py
-│       ├── buttons.py         # 按钮组件
-│       ├── cards.py           # 卡片组件
-│       └── notifications.py   # 通知组件
-├── agents/                # Agent模块
-│   ├── __init__.py
-│   └── medical_agent.py   # 医疗Agent
-├── memory/                # 记忆模块
-│   ├── __init__.py
-│   └── conversation_memory.py  # 对话记忆
-├── tools/                 # 工具模块
-│   ├── __init__.py
-│   ├── medical_tools.py   # 医疗工具
-│   └── rag_tool.py        # RAG工具
-├── data/                  # 数据目录
-│   ├── medical_docs/      # 医疗文档存储
-│   └── md5_records.txt    # MD5去重记录
-├── logs/                  # 日志目录
-├── tests/                 # 测试目录
-│   ├── run_tests.py
-│   ├── test_api.py
-│   ├── test_agent.py
-│   └── test_frontend.py
-├── config.py              # 项目配置
-├── main.py                # FastAPI应用入口
-├── app_streamlit.py       # Streamlit前端应用（67行，精简版）
-├── requirements.txt       # Python依赖
-└── setup.py              # 初始化脚本
+├── agents/                 # Tool Calling Agent
+├── api/                    # FastAPI 路由与 Schema
+├── app/                    # Streamlit 模块化前端
+├── data/
+│   ├── medical_docs/       # 知识库原始文档
+│   └── md5_records.txt     # 已导入文件的 MD5 记录
+├── database/               # SQLAlchemy 连接与模型
+├── images/                 # README 截图
+├── llm/                    # Ollama 客户端封装
+├── logs/                   # 运行日志
+├── memory/                 # 分层记忆
+├── rag/                    # 检索、切分、向量化、更新
+├── tests/                  # 脚本式测试与定向测试
+├── tools/                  # Agent 工具
+├── app_streamlit.py        # Streamlit 入口
+├── config.py               # 后端配置
+├── main.py                 # FastAPI 入口
+├── QUICKSTART.md           # 旧版快速说明
+├── PROJECT_ANALYSIS_AND_OPTIMIZATION.md
+├── requirements.txt
+└── setup.py
 ```
 
-## 🎨 前端架构（v2.0）
+## 核心模块说明
 
-### 架构特点
+### 后端入口
 
-```
-┌─────────────────────────────────────────────┐
-│          app_streamlit.py (67行)            │
-│         职责：初始化 + 路由                  │
-└──────────────────┬──────────────────────────┘
-                   │
-    ┌──────────────┼──────────────┐
-    │              │              │
-┌───▼────┐   ┌────▼─────┐   ┌───▼────┐
-│ state  │   │ styles   │   │  API   │
-│manager │   │ manager  │   │ client │
-└────────┘   └──────────┘   └───────┘
-                                │
-                   ┌────────────┼────────────┐
-                   │            │            │
-              ┌────▼────┐ ┌────▼────┐ ┌────▼────┐
-              │  Chat   │ │Knowledge│ │Settings │
-              │  Page   │ │  Page   │ │  Page   │
-              └────┬────┘ └────┬────┘ └────┬────┘
-                   │           │           │
-              ┌────▼────┐ ┌────▼────┐ ┌────▼────┐
-              │Components│ │Components│ │Components│
-              └─────────┘ └─────────┘ └─────────┘
-```
+- `main.py`
+  - 创建 FastAPI 应用
+  - 初始化数据库
+  - 注册 `/api/v1` 路由
 
-### 设计原则
+### Agent
 
-✅ **单一职责原则**：每个文件只负责一个明确的功能  
-✅ **开闭原则**：扩展功能无需修改现有代码  
-✅ **依赖倒置**：通过抽象基类定义接口  
-✅ **DRY原则**：样式和状态统一管理  
-✅ **模块化设计**：平均文件大小 62 行（原 402 行）
+- `agents/medical_agent.py`
+  - 创建 Tool Calling Agent
+  - 预检索知识库
+  - 注入分层记忆
+  - 保存 Agent 交互
 
-### 性能优化
+当前 Agent 默认加载 6 个工具：
 
-| 优化项 | 优化前 | 优化后 | 提升 |
-|--------|--------|--------|------|
-| 页面初始加载 | 3-5秒 | 0.5-1秒 | ↑ 80% |
-| 消息发送响应 | 2-3秒 | 0.3-0.5秒 | ↑ 85% |
-| 切换页面 | 1-2秒 | 0.2-0.3秒 | ↑ 85% |
-| 知识库列表加载 | 2-4秒 | 0.3-0.5秒 | ↑ 85% |
-| 内存占用 | 高 | 低 | ↓ 60% |
+- `analyze_symptoms`
+- `calculate_bmi`
+- `classify_blood_pressure`
+- `recommend_department`
+- `search_medical_knowledge`
+- `get_disease_info`
 
-### 优化策略
+### RAG
 
-1. **API 客户端缓存**：使用 `@st.cache_resource` 避免重复创建连接
-2. **统计数据缓存**：使用 `@st.cache_data(ttl=30)` 减少后端请求
-3. **消息分页显示**：默认只显示最近 50 条消息
-4. **文件列表分页**：每页显示 10 个文件，避免大量渲染
-5. **样式一次渲染**：全局样式只加载一次
+- `rag/rag_chain.py`
+  - 文档导入
+  - 标准问答
+  - 流式问答
+  - 统计信息
+- `rag/retriever.py`
+  - 混合检索诊断信息
+- `rag/bm25_retriever.py`
+  - 中文/英文兼容的轻量关键词检索
+- `rag/reranker.py`
+  - 轻量融合重排
 
-## 🚀 快速开始
+### 记忆
 
-### 前置要求
+- `memory/conversation_memory.py`
+  - 短期记忆
+  - 事实记忆
+  - 摘要记忆
+  - 会话统计与会话清理
 
-1. **Python 3.11+**
-2. **Ollama** - 本地大模型服务
-3. **PostgreSQL** - 关系型数据库（需安装 pgvector 扩展）
+### 前端
 
-### 步骤1：安装 Ollama 和模型
+- `app_streamlit.py`
+  - 页面路由与整体装配
+- `app/pages/chat_page.py`
+  - 聊天页
+- `app/pages/knowledge_page.py`
+  - 知识库页
+- `app/pages/settings_page.py`
+  - 设置页
+
+## 环境要求
+
+建议环境：
+
+- Python `3.11+`
+- PostgreSQL `15+` 或兼容版本
+- `pgvector` 扩展
+- Ollama
+
+推荐先准备好两个模型：
 
 ```bash
-# 下载安装 Ollama
-# Windows: https://ollama.com/download/windows
-
-# 拉取所需模型
-ollama pull qwen2.5:7b      # 对话模型
-ollama pull bge-m3:latest   # 嵌入模型
-
-# 查看已安装模型
-ollama list
+ollama pull qwen2.5:7b
+ollama pull bag-m3:latest
 ```
 
-### 步骤2：安装 PostgreSQL 和 pgvector
+如果 `bag-m3:latest` 在你的 Ollama 环境中不可用，可以换成你本地已安装的 embedding 模型，并同步修改 `.env`。
 
-```sql
--- 创建数据库
-CREATE DATABASE medical_rag_db;
+## 安装与启动
 
--- 启用 pgvector 扩展
-CREATE EXTENSION IF NOT EXISTS vector;
-```
-
-### 步骤3：克隆项目并安装依赖
+### 1. 创建虚拟环境并安装依赖
 
 ```bash
-# 克隆项目
-cd Medical_rag
-
-# 创建虚拟环境（推荐）
 python -m venv .venv
-.venv\Scripts\activate  # Windows
-# source .venv/bin/activate  # Linux/Mac
-
-# 安装依赖
+.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 步骤4：配置环境变量
+如果你要使用文件上传接口，再额外安装一次：
 
 ```bash
-# 复制配置模板
-copy .env.example .env  # Windows
-# cp .env.example .env  # Linux/Mac
-
-# 编辑 .env 文件，修改以下配置：
-# - DATABASE_URL：数据库连接字符串
-# - OLLAMA_BASE_URL：Ollama服务地址（默认 http://localhost:11434）
-# - EMBEDDING_MODEL：嵌入模型名称
-# - LLM_MODEL：对话模型名称
+pip install python-multipart
 ```
 
-### 步骤5：启动服务
+说明：当前 `requirements.txt` 里没有显式包含 `python-multipart`，但 FastAPI 的上传接口实际需要它。
 
-#### 启动后端服务
+### 2. 配置 PostgreSQL + pgvector
+
+示例：
+
+```sql
+CREATE DATABASE medical_rag;
+\c medical_rag
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+### 3. 配置 `.env`
+
+```bash
+copy .env.example .env
+```
+
+请重点修改这些值：
+
+```env
+DATABASE_URL=postgresql://username:password@localhost:5432/medical_rag
+OLLAMA_BASE_URL=http://localhost:11434
+EMBEDDING_MODEL=bag-m3:latest
+LLM_MODEL=qwen2.5:7b
+API_HOST=0.0.0.0
+API_PORT=8000
+DEBUG=true
+LOG_LEVEL=INFO
+```
+
+注意：
+
+- `.env.example` 当前数据库地址是一个局域网 IP 示例，不适合直接拿来运行
+- 必须改成你自己的数据库连接串
+
+### 4. 可选：执行初始化脚本
+
+```bash
+python setup.py
+```
+
+这个脚本会：
+
+- 检查 Python 版本
+- 创建 `logs/` 和 `data/medical_docs/`
+- 可选安装依赖
+- 可选复制 `.env`
+
+### 5. 启动后端
 
 ```bash
 python main.py
 ```
 
-访问 API 文档：http://localhost:8000/docs
+启动后可访问：
 
-#### 启动前端界面（新终端）
+- API 文档：`http://localhost:8000/docs`
+- 健康检查：`http://localhost:8000/api/v1/health`
+
+### 6. 启动前端
 
 ```bash
-# 推荐方式（更稳定）
 python -m streamlit run app_streamlit.py
-
-# 或者
-streamlit run app_streamlit.py
 ```
 
-访问前端界面：http://localhost:8501
+前端地址：
 
-### 步骤6：导入文档
+- `http://localhost:8501`
 
-#### 方式一：通过前端界面上传文件
+## 第一次使用建议
 
-1. 在侧边栏选择文档分类
-2. 上传单个文件或批量上传多个文件
-3. 系统自动检测重复文件（MD5 去重）
-4. 自动导入到知识库
+### 方式一：直接把文档放到目录里
 
-#### 方式二：通过 API 导入目录文档
+将文档放入：
+
+```text
+data/medical_docs/
+data/medical_docs/general/
+data/medical_docs/cardiology/
+data/medical_docs/endocrinology/
+```
+
+然后执行增量更新：
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/ingest" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "data_dir": "data/medical_docs",
-    "category": "general"
-  }'
+curl -X POST "http://localhost:8000/api/v1/update/incremental"
 ```
 
-#### 方式三：知识库更新
+### 方式二：通过前端上传
 
-- **增量更新**：仅导入新增文件，自动跳过已存在文档
-  ```bash
-  curl -X POST "http://localhost:8000/api/v1/update/incremental"
-  ```
+1. 打开知识库页面
+2. 选择分类
+3. 上传 `pdf/docx/txt`
+4. 前端会先调用 `/upload`
+5. 再调用 `/ingest-file` 完成入库
 
-- **全量更新**：重新导入所有文件
-  ```bash
-  curl -X POST "http://localhost:8000/api/v1/update/full"
-  ```
+## 文档与分类规则
 
-## 📖 API 文档
+- 支持格式：`pdf`、`docx`、`txt`
+- 单文件上传最大值：`50MB`
+- MD5 去重基于文件内容哈希
+- 分类既可以显式传入，也可以从目录推断
+- 当文档位于 `data/medical_docs/<category>/xxx.txt` 时，系统会优先把 `<category>` 识别为分类
 
-### 主要接口
+## API 概览
 
-| 接口 | 方法 | 说明 |
-|------|------|------|
-| `/api/v1/health` | GET | 健康检查 |
-| `/api/v1/query` | POST | 智能问答 |
-| `/api/v1/query-stream` | POST | 流式问答 |
-| `/api/v1/ingest` | POST | 导入目录文档 |
-| `/api/v1/stats` | GET | 获取统计信息 |
-| `/api/v1/documents/delete` | POST | 删除文档 |
-| `/api/v1/upload` | POST | 上传单个文件 |
-| `/api/v1/upload/batch` | POST | 批量上传文件 |
-| `/api/v1/ingest-file` | POST | 导入已上传文件 |
-| `/api/v1/files` | GET | 获取文件列表 |
-| `/api/v1/files/{filename}` | DELETE | 删除文件 |
-| `/api/v1/update/incremental` | POST | 增量更新知识库 |
-| `/api/v1/update/full` | POST | 全量更新知识库 |
+### 问答接口
 
-### 文件上传接口示例
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/v1/query` | Agent 标准问答 |
+| `POST` | `/api/v1/query-stream` | Agent 流式问答 |
+| `POST` | `/api/v1/query-rag` | 纯 RAG 标准问答 |
+| `POST` | `/api/v1/query-stream-rag` | 纯 RAG 流式问答 |
+| `GET` | `/api/v1/health` | 健康检查 |
 
-#### 单文件上传
+### 知识库接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/v1/ingest` | 导入目录 |
+| `POST` | `/api/v1/ingest-file` | 导入单个文件 |
+| `POST` | `/api/v1/update/incremental` | 增量更新 |
+| `POST` | `/api/v1/update/full` | 全量更新 |
+| `GET` | `/api/v1/stats` | 获取统计信息 |
+| `POST` | `/api/v1/documents/delete` | 删除向量文档块 |
+
+### 文件管理接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/v1/upload` | 单文件上传 |
+| `POST` | `/api/v1/upload/batch` | 批量上传 |
+| `GET` | `/api/v1/files` | 文件列表 |
+| `DELETE` | `/api/v1/files/{filename}` | 删除文件 |
+
+## 问答请求示例
+
+### Agent 问答
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/upload" \
-  -F "file=@document.pdf" \
-  -F "category=general"
+curl -X POST "http://localhost:8000/api/v1/query" ^
+  -H "Content-Type: application/json" ^
+  -d "{\"question\":\"我身高175cm，体重70kg，BMI是多少？\",\"session_id\":\"demo-session\",\"k\":3,\"category\":\"general\"}"
 ```
 
-#### 批量文件上传
+### 纯 RAG 问答
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/upload/batch" \
-  -F "files=@doc1.pdf" \
-  -F "files=@doc2.docx" \
-  -F "category=general"
+curl -X POST "http://localhost:8000/api/v1/query-rag" ^
+  -H "Content-Type: application/json" ^
+  -d "{\"question\":\"感冒一般如何处理？\",\"session_id\":\"demo-rag\",\"k\":5,\"category\":\"general\"}"
 ```
 
-### 问答接口示例
-
-```bash
-curl -X POST "http://localhost:8000/api/v1/query" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "感冒了应该吃什么药？",
-    "session_id": "session_001",
-    "k": 5,
-    "category": "general"
-  }'
-```
-
-响应示例：
+### 响应结构
 
 ```json
 {
-  "question": "感冒了应该吃什么药？",
-  "answer": "根据医学指南，感冒治疗以对症治疗为主...",
-  "context_count": 5,
+  "question": "感冒一般如何处理？",
+  "answer": "……",
+  "session_id": "demo-rag",
   "sources": [
     {
-      "content": "常用药物包括解热镇痛药...",
       "source": "感冒诊疗指南.txt",
-      "category": "general"
+      "category": "general",
+      "content": "命中的文档片段",
+      "score": 0.81,
+      "rerank_score": 0.77,
+      "page": null,
+      "chunk_id": "chunk_xxx",
+      "retrieval_methods": ["vector", "keyword"]
     }
-  ]
+  ],
+  "tool_calls": [],
+  "tool_calls_count": 0,
+  "debug_info": {
+    "requested_k": 5,
+    "applied_category": "general",
+    "retrieval_count": 1,
+    "used_chat_mode": false,
+    "low_confidence": false,
+    "retrieval_strategy": "hybrid",
+    "vector_result_count": 3,
+    "keyword_result_count": 2,
+    "merged_result_count": 4
+  }
 }
 ```
 
-## ⚙️ 配置说明
+## 知识库操作示例
 
-### 环境变量
+### 导入整个目录
 
-| 变量名 | 默认值 | 说明 |
-|--------|--------|------|
-| `DATABASE_URL` | - | PostgreSQL连接字符串 |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama服务地址 |
-| `EMBEDDING_MODEL` | `bge-m3:latest` | 嵌入模型名称 |
-| `LLM_MODEL` | `qwen2.5:7b` | 对话模型名称 |
+```bash
+curl -X POST "http://localhost:8000/api/v1/ingest" ^
+  -H "Content-Type: application/json" ^
+  -d "{\"data_dir\":\"data/medical_docs\",\"category\":\"general\"}"
+```
+
+### 导入单个文件
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/ingest-file?filepath=data/medical_docs/general/感冒诊疗指南.txt&category=general"
+```
+
+### 增量更新
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/update/incremental"
+```
+
+### 获取统计
+
+```bash
+curl "http://localhost:8000/api/v1/stats"
+```
+
+## 前端功能概览
+
+前端当前已经实现这些能力：
+
+- 聊天页
+  - Agent / RAG 模式切换
+  - 流式回答
+  - 工具调用展示
+  - 来源片段展示
+- 知识库页
+  - 文件上传
+  - 一键增量更新
+  - 文件搜索
+  - 状态筛选
+  - 操作日志
+- 设置页
+  - `top_k`
+  - 问答模式
+  - 检索分类
+  - 是否流式输出
+  - 是否显示工具调用
+
+## 测试说明
+
+项目里的测试分成两类。
+
+### 1. 不强依赖完整外部服务的定向测试
+
+这些更适合先跑：
+
+- `tests/test_retrieval_pipeline.py`
+- `tests/test_knowledge_base_update.py`
+- `tests/test_file_upload_service.py`
+- `tests/test_file_list_status.py`
+- `tests/test_rag_stats.py`
+
+### 2. 依赖外部服务或真实环境的测试
+
+- `tests/test_api.py`
+  - 需要后端已启动
+- `tests/test_complete.py`
+  - 需要后端已启动
+- `tests/test_agent.py`
+  - 需要 Ollama，通常还要有可用知识库
+- `tests/test_memory_integration.py`
+  - 需要 PostgreSQL 可用
+
+### 运行方式
+
+```bash
+python tests/run_tests.py
+```
+
+也可以单独执行：
+
+```bash
+python tests/test_frontend.py
+python tests/test_api.py
+python tests/test_agent.py
+```
+
+## 常用配置项
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `DATABASE_URL` | `postgresql://myuser:mypassword@192.168.150.100:5432/medical_rag` | PostgreSQL 连接串 |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama 服务地址 |
+| `EMBEDDING_MODEL` | `bag-m3:latest` | 嵌入模型 |
+| `LLM_MODEL` | `qwen2.5:7b` | 对话模型 |
 | `CHUNK_SIZE` | `500` | 文本块大小 |
 | `CHUNK_OVERLAP` | `50` | 文本块重叠 |
-| `TOP_K` | `5` | 检索返回数量 |
-| `API_HOST` | `0.0.0.0` | API服务地址 |
-| `API_PORT` | `8000` | API服务端口 |
-| `DEBUG` | `true` | 调试模式 |
+| `TOP_K` | `5` | 默认召回数 |
+| `API_HOST` | `0.0.0.0` | API 监听地址 |
+| `API_PORT` | `8000` | API 端口 |
+| `DEBUG` | `True` | 调试模式 |
 | `LOG_LEVEL` | `INFO` | 日志级别 |
-| `MAX_UPLOAD_SIZE` | `52428800` | 最大上传文件大小（50MB） |
-| `ALLOWED_EXTENSIONS` | `pdf,docx,txt` | 允许上传的文件格式 |
 
-## 🎯 工作流程
+## 已知注意事项
 
-### RAG 问答流程
+这些是基于当前代码状态整理出来的，写 README 时特意按真实实现保留了：
 
-```
-用户提问
-  ↓
-语义检索（bge-m3）
-  ↓
-找到相关文档？
-  ├─ 是 → RAG模式：基于文档生成回答
-  └─ 否 → 聊天模式：直接调用LLM对话
-  ↓
-返回回答 + 参考来源
-  ↓
-保存到数据库
-```
+- 文件上传接口需要 `python-multipart`
+  - 当前 `requirements.txt` 没有显式声明
+- `update/full` 虽然有 `clear_first` 参数，但当前清空逻辑还是占位，没有真正清空现有向量数据
+- 前端里有一些偏展示性的设置项，真正影响后端行为的主要还是 `query_mode`、`query_category`、`top_k`、`enable_streaming`、`show_tool_calls`
+- 默认数据库地址不是 localhost，请务必修改 `.env`
 
-### 文件上传与导入流程
+## 开发建议
 
-```
-用户上传文件
-  ↓
-文件验证（格式、大小）
-  ↓
-保存到本地目录
-  ↓
-MD5 校验（检查是否重复）
-  ├─ 已存在 → 跳过
-  └─ 新文件 → 继续
-  ↓
-文档加载（PDF/Word/TXT）
-  ↓
-文本分割
-  ↓
-生成向量嵌入
-  ↓
-存储到向量数据库
-  ↓
-更新 MD5 记录
-```
+如果你准备继续迭代这个项目，优先级比较高的方向通常是：
 
-### 智能切换逻辑
+1. 给数据库迁移补上 Alembic
+2. 把 `python-multipart` 纳入依赖
+3. 为 `update/full(clear_first=True)` 实现真实清库
+4. 为前端设置项补齐和后端配置的联动
+5. 给检索与记忆链路增加更多集成测试
 
-1. **有相关文档**：使用 RAG 模式，确保回答的准确性和可溯源性
-2. **无相关文档**：使用聊天模式，提供智能对话体验
-3. **对话历史**：保留最近 3 轮对话上下文
+## 免责声明
 
-## 🛠️ 开发指南
-
-### 代码规范
-
-- 遵循 PEP 8 编码规范
-- 使用类型注解（Type Hints）
-- 添加详细的文档字符串（Docstrings）
-- 使用 Loguru 进行日志记录
-- 前端组件遵循单一职责原则
-
-### 前端扩展指南
-
-#### 添加新页面
-
-```python
-# 1. 在 app/pages/ 创建新页面
-from app.pages.base_page import BasePage
-
-class NewPage(BasePage):
-    def render(self):
-        # 实现页面渲染逻辑
-        pass
-
-# 2. 在 app_streamlit.py 注册页面
-pages = {
-    "chat": ChatPage(api_client, config),
-    "knowledge": KnowledgePage(api_client, config),
-    "settings": SettingsPage(api_client, config),
-    "new": NewPage(api_client, config)  # 新增
-}
-```
-
-#### 添加新组件
-
-```python
-# 在 app/components/ 创建新组件
-def render_new_component():
-    # 实现组件渲染逻辑
-    pass
-```
-
-#### 添加新小组件
-
-```python
-# 在 app/widgets/ 创建可复用小组件
-def custom_button(label: str, **kwargs):
-    # 实现按钮组件
-    pass
-```
-
-### 后端扩展指南
-
-#### 添加新的文档格式
-
-在 `rag/document_loader.py` 中添加对应的加载器：
-
-```python
-def load_new_format(self, file_path: str) -> List[Document]:
-    """加载新格式文档"""
-    # 实现加载逻辑
-    pass
-```
-
-#### 自定义系统提示词
-
-在 `rag/rag_chain.py` 的 `_chat_mode` 方法中修改 `system_prompt`。
-
-#### 调整检索参数
-
-在 `.env` 文件中修改：
-
-```env
-CHUNK_SIZE=500        # 文档块大小
-CHUNK_OVERLAP=50      # 重叠大小
-TOP_K=5               # 检索数量
-```
-
-## 🐛 常见问题
-
-### 1. Ollama 连接失败
-
-**问题**：`Connection refused` 或模型未找到
-
-**解决**：
-- 确认 Ollama 服务已启动：`ollama serve`
-- 检查模型是否已下载：`ollama list`
-- 验证服务地址是否正确
-
-### 2. 数据库连接失败
-
-**问题**：`could not connect to server`
-
-**解决**：
-- 确认 PostgreSQL 服务已启动
-- 检查 `.env` 中的数据库配置
-- 确认 pgvector 扩展已安装
-
-### 3. 回答质量不佳
-
-**优化建议**：
-- 增加相关文档数量和质量
-- 调整 `TOP_K` 参数（增大或减小）
-- 优化文档内容和结构
-- 尝试不同的嵌入模型或 LLM 模型
-
-### 4. Streamlit 警告信息
-
-**问题**：`Thread 'MainThread': missing ScriptRunContext`
-
-**解决**：这些警告不影响功能，仅在非 Streamlit 环境下运行时出现。确保使用 `streamlit run app_streamlit.py` 启动前端。
-
-### 5. 文件上传失败
-
-**问题**：`Form data requires "python-multipart" to be installed`
-
-**解决**：
-```bash
-pip install python-multipart
-```
-
-### 6. Streamlit 命令未找到
-
-**问题**：`streamlit : 无法将"streamlit"项识别为 cmdlet`
-
-**解决**：
-```bash
-# 方式一：使用 Python 模块运行（推荐）
-python -m streamlit run app_streamlit.py
-
-# 方式二：确保虚拟环境激活并安装 streamlit
-.venv\Scripts\activate
-pip install streamlit
-```
-
-### 7. 前端加载缓慢
-
-**问题**：页面刷新慢或响应延迟
-
-**解决**：
-- 确认已启用缓存机制（API 客户端和统计数据）
-- 检查消息数量，系统会自动限制显示最近 50 条
-- 文件列表超过 10 个会自动分页
-- 检查后端服务响应速度
-
-### 8. HTML 代码显示为文本
-
-**问题**：消息中显示 HTML 源代码
-
-**解决**：
-- 已在 v2.0 中修复，确保使用最新代码
-- 所有 HTML 字符串已优化为单行格式
-- 避免使用多行 f-string 导致的格式问题
-
-## 📊 系统架构
-
-```
-┌─────────────────────────────────────────────────┐
-│              Streamlit 前端 (v2.0)               │
-│           http://localhost:8501                  │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────┐  │
-│  │ 文件上传 │  │ 进度显示 │  │ 知识库更新   │  │
-│  │ 模块化   │  │ 缓存优化 │  │ 分页显示     │  │
-│  └────┬─────  └────┬─────  └──────┬───────┘  │
-└───────┼─────────────┼────────────────┼──────────┘
-        │ HTTP REST API
-┌───────▼─────────────▼────────────────▼──────────┐
-│               FastAPI 后端服务                    │
-│              http://localhost:8000               │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────┐  │
-│  │  RAG链   │  │ MD5去重  │  │ 文件上传服务 │  │
-│  │ Agent    │  │ 记忆管理 │  │ 知识库更新   │  │
-│  └────┬─────┘  └────┬─────  └──────────────┘  │
-└───────┼─────────────┼──────────────────────────┘
-        │             │                │
-┌───────▼─────┐ ┌────▼──────┐  ┌──────▼──────────┐
-│ PostgreSQL  │ │ Ollama    │  │  Ollama         │
-│ + pgvector  │ │ bge-m3    │  │  qwen2.5:7b     │
-│ 向量存储    │ │ 嵌入模型  │  │  对话模型       │
-└─────────────┘ └───────────┘  └─────────────────┘
-```
-
-## 📈 更新日志
-
-### v2.0 (2026-04-10)
-
-**前端架构重构**
-- ✨ 完成前端模块化重构，采用分层架构设计
-- ✨ 将大文件拆分为多个小组件（平均 62 行/文件）
-- ✨ 实现状态管理器（单例模式）
-- ✨ 实现样式管理器（统一管理 CSS）
-- ✨ 新增页面层、组件层、小组件层
-- ⚡ API 客户端缓存，避免重复创建连接
-- ⚡ 统计数据缓存（30秒），减少后端请求
-- ⚡ 消息列表分页显示（默认 50 条）
-- ⚡ 文件列表分页显示（默认 10 个/页）
-- 🐛 修复 HTML 显示为源代码的问题
-- 🐛 修复状态初始化错误
-- 📈 性能提升 80-85%
-
-### v1.0 (初始版本)
-
-- ✨ 实现 RAG 检索问答
-- ✨ 实现智能聊天模式
-- ✨ 支持文档上传和管理
-- ✨ MD5 去重功能
-- ✨ 多轮对话支持
-- ✨ FastAPI + Streamlit 双界面
-
-## 📝 许可证
-
-本项目仅供学习和研究使用。
-
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
-## 📧 联系方式
-
-如有问题，请提交 GitHub Issue。
-
----
-
-**⚠️ 免责声明**：本系统仅供参考，不能替代专业医疗建议。如有健康问题，请咨询专业医生。
+本项目仅用于学习、演示和研究，不能替代医生的专业判断与正式诊疗意见。

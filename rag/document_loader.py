@@ -1,10 +1,13 @@
 """
 文档加载器模块
-支持PDF、Word、TXT等格式的医疗文档加载
+支持PDF、Word、TXT等格式的医疗文档加载。
+
+第 6 步后，文档加载器只负责“读取文件 + 补齐基础元数据”，
+不再承担知识库生命周期治理判断，版本去重统一交给治理服务处理。
 """
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import Any, List, Dict, Tuple, Optional
 from langchain_community.document_loaders import (
     PyPDFLoader,
     Docx2txtLoader,
@@ -39,6 +42,7 @@ class MedicalDocumentLoader:
             "failed_count": 0,
             "failed_files": [],
             "document_count": 0,
+            "loaded_files": [],
         }
         
         if not self.data_dir.exists():
@@ -80,8 +84,8 @@ class MedicalDocumentLoader:
     
     def load_directory(self, pattern: str = "**/*") -> Tuple[List[Document], int, int]:
         """
-        加载目录下所有支持的文档（支持MD5去重）
-        
+        加载目录下所有支持的文档。
+
         Args:
             pattern: 文件匹配模式
             
@@ -92,55 +96,40 @@ class MedicalDocumentLoader:
         success_count = 0
         skip_count = 0
         failed_files = []
+        loaded_files = []
         
+        # 第 6 步后，版本判断由知识库治理服务负责；
+        # 这里不再使用 MD5 记录阻断文件读取。
         # 加载PDF文件
         pdf_files = list(self.data_dir.glob("**/*.pdf"))
         for pdf_file in pdf_files:
-            if self.enable_md5_check and self.md5_checker.check_file_exists(str(pdf_file)):
-                logger.info(f"跳过已存在的PDF: {pdf_file.name}")
-                skip_count += 1
-                continue
-            
             docs = self.load_pdf(str(pdf_file))
             if docs:
                 all_documents.extend(docs)
-                if self.enable_md5_check:
-                    self.md5_checker.add_file_record(str(pdf_file))
                 success_count += 1
+                loaded_files.append(str(pdf_file))
             else:
                 failed_files.append(pdf_file.name)
         
         # 加载Word文件
         docx_files = list(self.data_dir.glob("**/*.docx"))
         for docx_file in docx_files:
-            if self.enable_md5_check and self.md5_checker.check_file_exists(str(docx_file)):
-                logger.info(f"跳过已存在的Word: {docx_file.name}")
-                skip_count += 1
-                continue
-            
             docs = self.load_docx(str(docx_file))
             if docs:
                 all_documents.extend(docs)
-                if self.enable_md5_check:
-                    self.md5_checker.add_file_record(str(docx_file))
                 success_count += 1
+                loaded_files.append(str(docx_file))
             else:
                 failed_files.append(docx_file.name)
         
         # 加载TXT文件
         txt_files = list(self.data_dir.glob("**/*.txt"))
         for txt_file in txt_files:
-            if self.enable_md5_check and self.md5_checker.check_file_exists(str(txt_file)):
-                logger.info(f"跳过已存在的TXT: {txt_file.name}")
-                skip_count += 1
-                continue
-            
             docs = self.load_txt(str(txt_file))
             if docs:
                 all_documents.extend(docs)
-                if self.enable_md5_check:
-                    self.md5_checker.add_file_record(str(txt_file))
                 success_count += 1
+                loaded_files.append(str(txt_file))
             else:
                 failed_files.append(txt_file.name)
         
@@ -150,14 +139,15 @@ class MedicalDocumentLoader:
             "failed_count": len(failed_files),
             "failed_files": failed_files,
             "document_count": len(all_documents),
+            "loaded_files": loaded_files,
         }
         logger.info(f"文档加载完成 - 成功: {success_count}, 跳过: {skip_count}, 总文档块: {len(all_documents)}")
         return all_documents, success_count, skip_count
     
     def load_single_file(self, file_path: str) -> Tuple[List[Document], bool]:
         """
-        加载单个文件（支持MD5去重）
-        
+        加载单个文件。
+
         Args:
             file_path: 文件路径
             
@@ -165,11 +155,6 @@ class MedicalDocumentLoader:
             (文档列表, 是否为新文件)
         """
         file_path = Path(file_path)
-        
-        # MD5检查
-        if self.enable_md5_check and self.md5_checker.check_file_exists(str(file_path)):
-            logger.info(f"文件已存在，跳过: {file_path.name}")
-            return [], False
         
         # 根据文件扩展名加载
         suffix = file_path.suffix.lower()
@@ -183,10 +168,6 @@ class MedicalDocumentLoader:
             logger.error(f"不支持的文件格式: {suffix}")
             return [], False
         
-        # 记录MD5
-        if docs and self.enable_md5_check:
-            self.md5_checker.add_file_record(str(file_path))
-
         return docs, len(docs) > 0
 
     def _infer_category_from_source(self, source_path: Optional[str]) -> Optional[str]:
@@ -237,7 +218,12 @@ class MedicalDocumentLoader:
         except Exception:
             return None
 
-    def add_metadata(self, documents: List[Document], category: str = "general") -> List[Document]:
+    def add_metadata(
+        self,
+        documents: List[Document],
+        category: str = "general",
+        file_metadata_map: Optional[Dict[str, Dict[str, Any]]] = None
+    ) -> List[Document]:
         """
         为文档添加元数据
         
@@ -248,12 +234,14 @@ class MedicalDocumentLoader:
         Returns:
             添加了元数据的文档列表
         """
+        file_metadata_map = file_metadata_map or {}
         for doc in documents:
             source_path = doc.metadata.get("source")
             source_name = Path(source_path).name if source_path else doc.metadata.get("source", "未知来源")
             inferred_category = self._infer_category_from_source(source_path)
             page = self._normalize_page(doc.metadata.get("page"))
             source_type = doc.metadata.get("source_type")
+            metadata_override = file_metadata_map.get(str(source_path), {})
 
             if not source_type and source_path:
                 source_type = Path(source_path).suffix.lower().lstrip(".") or "unknown"
@@ -265,9 +253,13 @@ class MedicalDocumentLoader:
             doc.metadata.update({
                 "source": source_name,
                 "source_path": source_path,
-                "category": resolved_category or inferred_category or "general",
+                "category": metadata_override.get("category", resolved_category or inferred_category or "general"),
                 "page": page,
-                "source_type": source_type or "unknown",
-                "updated_at": self._resolve_updated_at(source_path, doc.metadata.get("updated_at")),
+                "source_type": metadata_override.get("source_type", source_type or "unknown"),
+                "updated_at": metadata_override.get(
+                    "updated_at",
+                    self._resolve_updated_at(source_path, doc.metadata.get("updated_at"))
+                ),
             })
+            doc.metadata.update(metadata_override)
         return documents

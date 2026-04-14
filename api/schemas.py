@@ -1,8 +1,8 @@
+"""Pydantic模型定义
+
+用于API请求和响应的数据验证。
 """
-Pydantic模型定义
-用于API请求和响应的数据验证
-"""
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 
 from pydantic import BaseModel, Field
 
@@ -35,6 +35,15 @@ class ToolCallItem(BaseModel):
     """工具调用信息"""
     name: str = Field(..., description="工具名称")
     args: Dict[str, Any] = Field(default_factory=dict, description="工具参数")
+    stage: Optional[int] = Field(None, description="多阶段编排的阶段号（从1开始）", ge=1)
+    status: Literal["pending", "running", "success", "failed"] = Field(
+        "success",
+        description="阶段状态：pending/running/success/failed"
+    )
+    output: Optional[str] = Field(None, description="工具/阶段输出摘要（用于前端展示）")
+    error: Optional[str] = Field(None, description="失败原因（status=failed时可填）")
+    depends_on: Optional[List[str]] = Field(None, description="依赖的前置阶段/工具名称列表")
+    duration_ms: Optional[int] = Field(None, description="本阶段耗时（毫秒）", ge=0)
 
 
 class QueryDebugInfo(BaseModel):
@@ -79,6 +88,7 @@ class IngestResponse(BaseModel):
     success: bool = Field(..., description="是否成功")
     ingested_count: int = Field(..., description="导入的文档数量")
     message: str = Field(..., description="提示信息")
+    skipped_count: int = Field(0, description="跳过的文件数")
 
 
 class DeleteDocumentsRequest(BaseModel):
@@ -90,6 +100,79 @@ class DeleteDocumentsResponse(BaseModel):
     """删除文档响应模型"""
     success: bool = Field(..., description="是否成功")
     message: str = Field(..., description="提示信息")
+    deleted_records: int = Field(0, description="删除的文件记录数")
+    deleted_chunks: int = Field(0, description="删除的向量块数")
+
+
+class LifecycleDeleteRequest(BaseModel):
+    """按文件生命周期维度删除请求"""
+    source_id: Optional[str] = Field(None, description="逻辑文件ID")
+    category: Optional[str] = Field(None, description="文档分类")
+    source: Optional[str] = Field(None, description="文件名")
+    version: Optional[int] = Field(None, description="指定版本")
+
+
+class RollbackRequest(BaseModel):
+    """文件版本回滚请求"""
+    source_id: str = Field(..., description="逻辑文件ID")
+    target_version: int = Field(..., ge=1, description="目标版本号")
+
+
+class RollbackResponse(BaseModel):
+    """文件版本回滚响应"""
+    success: bool = Field(..., description="是否成功")
+    message: str = Field(..., description="提示信息")
+    source_id: Optional[str] = Field(None, description="逻辑文件ID")
+    version: Optional[int] = Field(None, description="回滚后的版本")
+    ingested_count: int = Field(0, description="重新导入的文档块数")
+
+
+class FileVersionItem(BaseModel):
+    """文件版本历史项"""
+    id: int = Field(..., description="记录ID")
+    source_id: str = Field(..., description="逻辑文件ID")
+    filename: str = Field(..., description="文件名")
+    filepath: str = Field(..., description="文件路径")
+    logical_name: str = Field(..., description="逻辑文件名")
+    category: str = Field(..., description="文档分类")
+    source_type: str = Field(..., description="文件类型")
+    file_hash: str = Field(..., description="文件哈希")
+    version: int = Field(..., description="版本号")
+    status: str = Field(..., description="状态")
+    is_current: bool = Field(..., description="是否当前生效")
+    chunk_count: int = Field(0, description="文档块数")
+    error_message: Optional[str] = Field(None, description="错误信息")
+    uploaded_at: Optional[str] = Field(None, description="上传时间")
+    ingested_at: Optional[str] = Field(None, description="入库时间")
+    updated_at: Optional[str] = Field(None, description="更新时间")
+
+
+class FileVersionListResponse(BaseModel):
+    """文件版本历史响应"""
+    source_id: str = Field(..., description="逻辑文件ID")
+    total: int = Field(..., description="版本数")
+    versions: List[FileVersionItem] = Field(default_factory=list, description="版本列表")
+
+
+class IngestJobItem(BaseModel):
+    """导入任务日志项"""
+    id: int = Field(..., description="任务ID")
+    job_type: str = Field(..., description="任务类型")
+    status: str = Field(..., description="任务状态")
+    source_id: Optional[str] = Field(None, description="逻辑文件ID")
+    file_id: Optional[int] = Field(None, description="关联文件记录ID")
+    file_hash: Optional[str] = Field(None, description="文件哈希")
+    version: Optional[int] = Field(None, description="版本号")
+    chunk_count: int = Field(0, description="文档块数")
+    message: Optional[str] = Field(None, description="任务结果消息")
+    started_at: Optional[str] = Field(None, description="开始时间")
+    finished_at: Optional[str] = Field(None, description="结束时间")
+
+
+class IngestJobListResponse(BaseModel):
+    """导入任务日志响应"""
+    total: int = Field(..., description="任务数")
+    jobs: List[IngestJobItem] = Field(default_factory=list, description="任务列表")
 
 
 class StatsResponse(BaseModel):
@@ -104,6 +187,11 @@ class StatsResponse(BaseModel):
     document_chunks: int = Field(0, description="文档块数量")
     category_count: int = Field(0, description="分类数")
     last_updated: Optional[str] = Field(None, description="最后更新时间")
+    category_breakdown: Dict[str, int] = Field(default_factory=dict, description="分类文件数量分布")
+    total_versions: int = Field(0, description="文件版本总数")
+    active_versions: int = Field(0, description="当前有效版本数")
+    latest_version_time: Optional[str] = Field(None, description="最近版本更新时间")
+    failed_jobs: int = Field(0, description="失败任务数")
 
 
 class HealthResponse(BaseModel):
@@ -120,6 +208,10 @@ class FileUploadResponse(BaseModel):
     size: int = Field(..., description="文件大小（字节）")
     success: bool = Field(..., description="是否成功")
     message: Optional[str] = Field(None, description="提示信息")
+    source_id: Optional[str] = Field(None, description="逻辑文件ID")
+    file_hash: Optional[str] = Field(None, description="文件哈希")
+    version: Optional[int] = Field(None, description="版本号")
+    status: Optional[str] = Field(None, description="当前状态")
 
 
 class BatchUploadResponse(BaseModel):
@@ -139,6 +231,10 @@ class FileInfo(BaseModel):
     filepath: Optional[str] = Field(None, description="文件路径")
     upload_time: Optional[str] = Field(None, description="上传时间")
     status: Optional[str] = Field("pending", description="文件状态")
+    source_id: Optional[str] = Field(None, description="逻辑文件ID")
+    file_hash: Optional[str] = Field(None, description="文件哈希")
+    version: Optional[int] = Field(None, description="版本号")
+    is_current: Optional[bool] = Field(None, description="是否当前有效版本")
 
 
 class FileListResponse(BaseModel):

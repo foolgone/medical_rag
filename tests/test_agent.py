@@ -1,5 +1,11 @@
 """Agent功能测试"""
+import sys
+from pathlib import Path
+
 import pytest
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
 from agents.medical_agent import MedicalAgent
 from tools.medical_tools import analyze_symptoms, calculate_bmi, classify_blood_pressure
 from tools.rag_tool import search_medical_knowledge

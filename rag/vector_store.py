@@ -142,6 +142,39 @@ class MedicalVectorStore:
         except Exception as e:
             logger.error(f"删除文档失败: {e}")
             return False
+
+    def delete_by_metadata(self, filter_dict: Dict[str, Any]) -> bool:
+        """
+        按元数据条件删除向量文档。
+
+        Args:
+            filter_dict: 元数据过滤条件
+        """
+        sql = """
+            SELECT e.id
+            FROM langchain_pg_embedding e
+            JOIN langchain_pg_collection c ON e.collection_id = c.uuid
+            WHERE c.name = :collection_name
+        """
+        params: Dict[str, Any] = {"collection_name": self.collection_name}
+
+        for index, (key, value) in enumerate((filter_dict or {}).items()):
+            param_name = f"meta_{index}"
+            sql += f" AND e.cmetadata->>'{key}' = :{param_name}"
+            params[param_name] = str(value)
+
+        try:
+            with engine.connect() as conn:
+                ids = [row[0] for row in conn.execute(text(sql), params).fetchall()]
+
+            if not ids:
+                logger.info(f"未找到符合条件的向量文档: {filter_dict}")
+                return True
+
+            return self.delete_documents(ids)
+        except Exception as e:
+            logger.error(f"按元数据删除向量文档失败: {e}")
+            return False
     
     def similarity_search(
         self,

@@ -37,7 +37,7 @@ def display_message(message: dict, show_tools: bool = True, index: int = 0):
     if message["role"] == "user":
         _display_user_message(message)
     else:
-        _display_assistant_message(message, show_tools)
+        _display_assistant_message(message, show_tools, index)
 
 
 def _display_user_message(message: dict):
@@ -54,10 +54,9 @@ def _display_user_message(message: dict):
     )
 
 
-def _display_assistant_message(message: dict, show_tools: bool):
+def _display_assistant_message(message: dict, show_tools: bool, index: int):
     """显示AI助手消息"""
     tool_html = _build_tool_calls_html(message, show_tools)
-    reference_html = _build_references_html(message)
 
     st.markdown(
         f'<div style="display: flex; justify-content: flex-start; margin: 0.5rem 0;">'
@@ -67,10 +66,15 @@ def _display_assistant_message(message: dict, show_tools: bool):
         f'<strong>🤖 AI助手</strong></div>'
         f'<div style="font-size: 0.95rem; line-height: 1.6; color: #333;">'
         f'{message["content"]}</div>'
-        f'{tool_html}{reference_html}'
+        f'{tool_html}'
         f'</div></div>',
         unsafe_allow_html=True
     )
+
+    # 参考知识库默认折叠，避免答案出来后占用大量版面
+    if message.get("references"):
+        with st.expander(f"📚 参考知识库（{index + 1}）", expanded=False):
+            st.markdown(_build_references_html(message), unsafe_allow_html=True)
 
 
 def _build_tool_calls_html(message: dict, show_tools: bool) -> str:
@@ -78,13 +82,61 @@ def _build_tool_calls_html(message: dict, show_tools: bool) -> str:
     if not message.get("tool_calls") or not show_tools:
         return ""
 
-    tools = ", ".join([t.get("name", "?") for t in message["tool_calls"]])
+    tool_calls = message.get("tool_calls") or []
+
+    def _status_icon(status: str) -> str:
+        return {
+            "pending": "⏳",
+            "running": "⚙️",
+            "success": "✅",
+            "failed": "❌",
+        }.get((status or "").lower(), "🔧")
+
+    # 兼容：无 stage 时按原逻辑展示工具名
+    if not any(isinstance(t, dict) and t.get("stage") is not None for t in tool_calls):
+        tools = ", ".join([str(t.get("name", "?")) for t in tool_calls if isinstance(t, dict)])
+        return (
+            f'<div style="margin-top: 0.5rem; padding: 0.5rem; background: #e8f5e9; '
+            f'border-radius: 0.5rem; border-left: 3px solid #4caf50;">'
+            f'<p style="margin: 0; font-size: 0.8rem; color: #2e7d32;">'
+            f'<strong>🔧 工具调用:</strong> {html.escape(tools)}</p></div>'
+        )
+
+    # 多阶段展示：按 stage 排序
+    rows = []
+    for tc in sorted([t for t in tool_calls if isinstance(t, dict)], key=lambda x: (x.get("stage") or 999, x.get("name") or "")):
+        stage = tc.get("stage")
+        name = html.escape(str(tc.get("name", "?")))
+        status = (tc.get("status") or "success").lower()
+        output = tc.get("output")
+        error = tc.get("error")
+
+        output_text = ""
+        if isinstance(output, str) and output.strip():
+            snippet = output.strip()
+            snippet = snippet[:160] + ("…" if len(snippet) > 160 else "")
+            output_text = f"<br><span style='color:#555;'>输出: {html.escape(snippet)}</span>"
+
+        if isinstance(error, str) and error.strip():
+            err_snippet = error.strip()
+            err_snippet = err_snippet[:160] + ("…" if len(err_snippet) > 160 else "")
+            output_text += f"<br><span style='color:#b71c1c;'>错误: {html.escape(err_snippet)}</span>"
+
+        stage_label = f"阶段 {stage}" if stage is not None else "阶段 ?"
+        rows.append(
+            f"<div style='margin: 0.2rem 0;'>"
+            f"<strong>{_status_icon(status)} {html.escape(stage_label)}:</strong> {name}{output_text}"
+            f"</div>"
+        )
 
     return (
         f'<div style="margin-top: 0.5rem; padding: 0.5rem; background: #e8f5e9; '
         f'border-radius: 0.5rem; border-left: 3px solid #4caf50;">'
         f'<p style="margin: 0; font-size: 0.8rem; color: #2e7d32;">'
-        f'<strong>🔧 工具调用:</strong> {tools}</p></div>'
+        f'<strong>🔧 工具阶段:</strong></p>'
+        f'<div style="margin-top: 0.3rem; font-size: 0.75rem; color: #2e7d32;">'
+        f"{''.join(rows)}"
+        f"</div></div>"
     )
 
 

@@ -62,12 +62,28 @@ def _upgrade_memory_schema():
     )
 
 
+def _upgrade_knowledge_governance_schema():
+    """
+    轻量检查知识库治理相关表结构
+
+    第6步新增的文件版本表和导入任务表由 create_all 创建。
+    """
+    inspector = inspect(engine)
+    table_names = inspector.get_table_names()
+    logger.info(
+        "知识库治理表结构检查完成: knowledge_base_files={}, knowledge_base_ingest_jobs={}",
+        "knowledge_base_files" in table_names,
+        "knowledge_base_ingest_jobs" in table_names,
+    )
+
+
 def init_db():
     """初始化数据库，创建所有表"""
     try:
         Base.metadata.create_all(bind=engine)
         _upgrade_conversation_history_schema()
         _upgrade_memory_schema()
+        _upgrade_knowledge_governance_schema()
         logger.info("数据库表创建成功")
     except Exception as e:
         logger.error(f"数据库表创建失败: {e}")

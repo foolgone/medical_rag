@@ -63,13 +63,16 @@ def _apply_filters(files: list, search_keyword: str, filter_status: str) -> list
 
     if filter_status != "全部":
         status_map = {
-            "未向量化": "pending",
-            "已向量化": "vectorized",
+            "未向量化": {"pending", "uploaded"},
+            "已向量化": {"vectorized", "active"},
             "更新中": "processing",
             "失败": "failed"
         }
         target_status = status_map.get(filter_status, "")
-        files = [f for f in files if f.get('status') == target_status]
+        if isinstance(target_status, set):
+            files = [f for f in files if f.get('status') in target_status]
+        else:
+            files = [f for f in files if f.get('status') == target_status]
 
     return files
 

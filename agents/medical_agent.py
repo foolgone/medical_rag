@@ -2,6 +2,7 @@
 医疗Agent - 基于LangGraph的Tool Calling Agent
 """
 import json
+import time
 import uuid
 from typing import Any, Dict, List
 
@@ -11,11 +12,19 @@ from langgraph.checkpoint.memory import MemorySaver
 from loguru import logger
 
 from langchain_core.documents import Document
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from memory.conversation_memory import ConversationMemory
 from rag.rag_chain import MedicalRAGChain
 from tools.medical_tools import medical_tools
 from tools.rag_tool import search_medical_knowledge, get_disease_info
+
+from agents.symptom_triage_pipeline import (
+    assess_risk,
+    build_stage_tool_call,
+    extract_symptoms,
+    should_route_to_symptom_pipeline,
+)
 
 
 class MedicalAgent:
@@ -454,6 +463,204 @@ class MedicalAgent:
                 }
             }
 
+    @staticmethod
+    def _to_langchain_messages(messages: List[Dict[str, str]]) -> List[Any]:
+        """将内部 {role, content} 结构转换为 LangChain messages。"""
+        converted: List[Any] = []
+        for item in messages:
+            role = (item.get("role") or "").lower()
+            content = item.get("content") or ""
+            if role == "system":
+                converted.append(SystemMessage(content=content))
+            elif role == "assistant":
+                converted.append(AIMessage(content=content))
+            else:
+                converted.append(HumanMessage(content=content))
+        return converted
+
+    def _execute_symptom_pipeline_query(
+        self,
+        question: str,
+        thread_id: str = "default",
+        k: int = None,
+        category: str = None,
+        intent_reason: str = "",
+    ) -> Dict[str, Any]:
+        """症状咨询多阶段编排（同步）。
+
+        注意：该路径是确定性流水线，尽量展示阶段输出，最终回答再由 LLM 汇总生成。
+        """
+        started = time.perf_counter()
+        tool_calls: List[Dict[str, Any]] = []
+
+        filter_dict = self.rag_chain.build_filter_dict(category)
+        memory_bundle = self._get_memory_bundle(thread_id, question)
+
+        # stage 1: 症状抽取
+        t0 = time.perf_counter()
+        extraction = extract_symptoms(question)
+        tool_calls.append(
+            build_stage_tool_call(
+                name="extract_symptoms",
+                args={"question": question},
+                stage=1,
+                status="success",
+                output=f"症状: {extraction.symptoms_text}；持续: {extraction.duration_text}",
+                duration_ms=int((time.perf_counter() - t0) * 1000),
+            )
+        )
+
+        # stage 2: 风险分层
+        t0 = time.perf_counter()
+        risk = assess_risk(extraction.symptoms_text, question=question)
+        tool_calls.append(
+            build_stage_tool_call(
+                name="assess_risk",
+                args={"symptoms": extraction.symptoms_text, "duration": extraction.duration_text},
+                stage=2,
+                status="success",
+                output=f"风险: {risk.risk_level}；建议: {risk.next_action}",
+                duration_ms=int((time.perf_counter() - t0) * 1000),
+                depends_on=["extract_symptoms"],
+            )
+        )
+
+        # stage 3: 知识检索（用抽取后的检索 query）
+        t0 = time.perf_counter()
+        retrieval = self.rag_chain.retriever.retrieve_with_diagnostics(
+            query=extraction.retrieval_query,
+            k=k,
+            filter_dict=filter_dict,
+        )
+        docs = retrieval["documents"]
+        low_confidence = retrieval["low_confidence"]
+        best_score = retrieval["best_score"]
+        sources = self.rag_chain.serialize_sources(docs)
+        diag_output = (
+            f"命中: {len(sources)}；策略: {retrieval.get('retrieval_strategy') or 'unknown'}；"
+            f"低置信: {bool(low_confidence)}"
+        )
+        tool_calls.append(
+            build_stage_tool_call(
+                name="retrieve_medical_knowledge",
+                args={"query": extraction.retrieval_query, "k": k, "category": category or ""},
+                stage=3,
+                status="success",
+                output=diag_output,
+                duration_ms=int((time.perf_counter() - t0) * 1000),
+                depends_on=["assess_risk"],
+            )
+        )
+
+        # stage 4: 科室推荐
+        t0 = time.perf_counter()
+        dept_text = ""
+        dept_error = None
+        try:
+            from tools.medical_tools import recommend_department
+
+            dept_text = recommend_department.invoke({"symptoms": extraction.symptoms_text})
+        except Exception as e:
+            dept_error = str(e)
+            dept_text = "科室推荐生成失败（已降级）。"
+
+        tool_calls.append(
+            build_stage_tool_call(
+                name="recommend_department",
+                args={"symptoms": extraction.symptoms_text},
+                stage=4,
+                status="failed" if dept_error else "success",
+                output=(dept_text[:200] + "…") if dept_text and len(dept_text) > 200 else dept_text,
+                error=dept_error,
+                duration_ms=int((time.perf_counter() - t0) * 1000),
+                depends_on=["retrieve_medical_knowledge"],
+            )
+        )
+
+        # stage 5: 汇总生成（LLM）
+        pipeline_context = (
+            "你将基于以下确定性分析结果与知识库内容，为用户给出专业、清晰、可执行的建议。\n"
+            f"- 症状: {extraction.symptoms_text}\n"
+            f"- 持续时间: {extraction.duration_text}\n"
+            f"- 风险等级: {risk.risk_level}\n"
+            f"- 风险理由: {'；'.join(risk.reasons)}\n"
+            f"- 下一步建议: {risk.next_action}\n"
+            "要求：\n"
+            "1) 不做确诊与处方；必要时建议就医。\n"
+            "2) 给出“自我处理/观察点/何时就医/建议科室”分段。\n"
+            "3) 如知识库命中不足，明确说明信息有限。\n"
+        )
+
+        base_messages = self._build_messages(question, docs, category, memory_bundle)
+        converted = self._to_langchain_messages(base_messages)
+
+        # 将流水线结果作为系统消息插入到最后一个用户问题之前
+        if converted and isinstance(converted[-1], HumanMessage):
+            user_msg = converted.pop()
+            converted.append(SystemMessage(content=pipeline_context))
+            converted.append(user_msg)
+        else:
+            converted.insert(0, SystemMessage(content=pipeline_context))
+
+        answer = ""
+        try:
+            response = self.llm.invoke(converted)
+            answer = self._extract_text(getattr(response, "content", ""))
+        except Exception as e:
+            logger.error("症状流水线LLM汇总失败: {}", e)
+            answer = "⚠️ 当前生成回答失败，建议尽快咨询专业医生或前往线下就诊。"
+
+        if low_confidence and answer:
+            answer = f"{self.rag_chain.build_low_confidence_notice(best_score)}\n\n{answer}"
+
+        self._save_memory_interaction(
+            session_id=thread_id,
+            question=question,
+            answer=answer,
+            tool_calls=tool_calls,
+            sources=sources,
+            category=category,
+            memory_bundle=memory_bundle,
+        )
+
+        memory_debug = memory_bundle.get("debug_info", {})
+        memory_applied = any([
+            memory_debug.get("memory_message_count", 0) > 0,
+            memory_debug.get("fact_count", 0) > 0,
+            memory_debug.get("summary_applied", False),
+        ])
+
+        return {
+            "question": question,
+            "answer": answer,
+            "session_id": thread_id,
+            "sources": sources,
+            "tool_calls": tool_calls,
+            "tool_calls_count": len(tool_calls),
+            "debug_info": {
+                "requested_k": k,
+                "applied_category": category,
+                "retrieval_count": len(sources),
+                "used_chat_mode": len(sources) == 0,
+                "low_confidence": bool(low_confidence),
+                "best_score": best_score,
+                "fallback_reason": "no_retrieval" if len(sources) == 0 else ("low_confidence" if low_confidence else None),
+                "retrieval_strategy": retrieval.get("retrieval_strategy"),
+                "vector_result_count": retrieval.get("vector_result_count", 0),
+                "keyword_result_count": retrieval.get("keyword_result_count", 0),
+                "merged_result_count": retrieval.get("merged_result_count", 0),
+                "rewritten_query": retrieval.get("rewritten_query"),
+                "memory_applied": memory_applied,
+                "memory_message_count": memory_debug.get("memory_message_count", 0),
+                "fact_memory_count": memory_debug.get("fact_count", 0),
+                "summary_memory_applied": memory_debug.get("summary_applied", False),
+                "intent": "symptom_pipeline",
+                "intent_reason": intent_reason,
+                "pipeline_duration_ms": int((time.perf_counter() - started) * 1000),
+                "risk_level": risk.risk_level,
+            },
+        }
+
     def query(
         self,
         question: str,
@@ -462,6 +669,16 @@ class MedicalAgent:
         category: str = None
     ) -> Dict[str, Any]:
         """使用Agent回答问题"""
+        use_pipeline, reason = should_route_to_symptom_pipeline(question)
+        if use_pipeline:
+            return self._execute_symptom_pipeline_query(
+                question=question,
+                thread_id=thread_id,
+                k=k,
+                category=category,
+                intent_reason=reason,
+            )
+
         return self._execute_query(question, thread_id=thread_id, k=k, category=category)
 
     def stream_query(
@@ -475,6 +692,193 @@ class MedicalAgent:
         流式查询（输出标准化事件）
         """
         try:
+            use_pipeline, reason = should_route_to_symptom_pipeline(question)
+            if use_pipeline:
+                runtime_thread_id = self._build_runtime_thread_id(thread_id)
+                config = {"configurable": {"thread_id": runtime_thread_id}}
+                filter_dict = self.rag_chain.build_filter_dict(category)
+                memory_bundle = self._get_memory_bundle(thread_id, question)
+
+                tool_calls: List[Dict[str, Any]] = []
+                answer_parts: List[str] = []
+
+                yield {"type": "start", "message": "Agent开始处理", "session_id": thread_id}
+
+                # stage 1
+                t0 = time.perf_counter()
+                extraction = extract_symptoms(question)
+                stage1 = build_stage_tool_call(
+                    name="extract_symptoms",
+                    args={"question": question},
+                    stage=1,
+                    status="success",
+                    output=f"症状: {extraction.symptoms_text}；持续: {extraction.duration_text}",
+                    duration_ms=int((time.perf_counter() - t0) * 1000),
+                )
+                tool_calls.append(stage1)
+                yield {"type": "tool_call", "tools": [stage1]}
+
+                # stage 2
+                t0 = time.perf_counter()
+                risk = assess_risk(extraction.symptoms_text, question=question)
+                stage2 = build_stage_tool_call(
+                    name="assess_risk",
+                    args={"symptoms": extraction.symptoms_text, "duration": extraction.duration_text},
+                    stage=2,
+                    status="success",
+                    output=f"风险: {risk.risk_level}；建议: {risk.next_action}",
+                    duration_ms=int((time.perf_counter() - t0) * 1000),
+                    depends_on=["extract_symptoms"],
+                )
+                tool_calls.append(stage2)
+                yield {"type": "tool_call", "tools": [stage2]}
+
+                # stage 3 retrieval
+                t0 = time.perf_counter()
+                retrieval = self.rag_chain.retriever.retrieve_with_diagnostics(
+                    query=extraction.retrieval_query,
+                    k=k,
+                    filter_dict=filter_dict,
+                )
+                docs = retrieval["documents"]
+                low_confidence = retrieval["low_confidence"]
+                best_score = retrieval["best_score"]
+                sources = self.rag_chain.serialize_sources(docs)
+
+                if sources:
+                    yield {"type": "retrieval", "sources": sources}
+
+                stage3 = build_stage_tool_call(
+                    name="retrieve_medical_knowledge",
+                    args={"query": extraction.retrieval_query, "k": k, "category": category or ""},
+                    stage=3,
+                    status="success",
+                    output=(
+                        f"命中: {len(sources)}；策略: {retrieval.get('retrieval_strategy') or 'unknown'}；"
+                        f"低置信: {bool(low_confidence)}"
+                    ),
+                    duration_ms=int((time.perf_counter() - t0) * 1000),
+                    depends_on=["assess_risk"],
+                )
+                tool_calls.append(stage3)
+                yield {"type": "tool_call", "tools": [stage3]}
+
+                # stage 4 dept
+                t0 = time.perf_counter()
+                dept_text = ""
+                dept_error = None
+                try:
+                    from tools.medical_tools import recommend_department
+
+                    dept_text = recommend_department.invoke({"symptoms": extraction.symptoms_text})
+                except Exception as e:
+                    dept_error = str(e)
+                    dept_text = "科室推荐生成失败（已降级）。"
+
+                stage4 = build_stage_tool_call(
+                    name="recommend_department",
+                    args={"symptoms": extraction.symptoms_text},
+                    stage=4,
+                    status="failed" if dept_error else "success",
+                    output=(dept_text[:200] + "…") if dept_text and len(dept_text) > 200 else dept_text,
+                    error=dept_error,
+                    duration_ms=int((time.perf_counter() - t0) * 1000),
+                    depends_on=["retrieve_medical_knowledge"],
+                )
+                tool_calls.append(stage4)
+                yield {"type": "tool_call", "tools": [stage4]}
+
+                if low_confidence:
+                    notice = self.rag_chain.build_low_confidence_notice(best_score)
+                    answer_parts.append(f"{notice}\n\n")
+                    yield {"type": "content", "content": f"{notice}\n\n"}
+
+                pipeline_context = (
+                    "你将基于以下确定性分析结果与知识库内容，为用户给出专业、清晰、可执行的建议。\n"
+                    f"- 症状: {extraction.symptoms_text}\n"
+                    f"- 持续时间: {extraction.duration_text}\n"
+                    f"- 风险等级: {risk.risk_level}\n"
+                    f"- 风险理由: {'；'.join(risk.reasons)}\n"
+                    f"- 下一步建议: {risk.next_action}\n"
+                    "要求：\n"
+                    "1) 不做确诊与处方；必要时建议就医。\n"
+                    "2) 给出“自我处理/观察点/何时就医/建议科室”分段。\n"
+                    "3) 如知识库命中不足，明确说明信息有限。\n"
+                )
+
+                base_messages = self._build_messages(question, docs, category, memory_bundle)
+                converted = self._to_langchain_messages(base_messages)
+                if converted and isinstance(converted[-1], HumanMessage):
+                    user_msg = converted.pop()
+                    converted.append(SystemMessage(content=pipeline_context))
+                    converted.append(user_msg)
+                else:
+                    converted.insert(0, SystemMessage(content=pipeline_context))
+
+                # stage 5 streaming
+                try:
+                    for chunk in self.llm.stream(converted, config=config):
+                        text = self._extract_text(getattr(chunk, "content", ""))
+                        if not text:
+                            continue
+                        answer_parts.append(text)
+                        yield {"type": "content", "content": text}
+                except Exception as e:
+                    logger.error("症状流水线流式生成失败: {}", e)
+                    yield {"type": "error", "error": str(e)}
+                    return
+
+                answer = "".join(answer_parts).strip()
+
+                self._save_memory_interaction(
+                    session_id=thread_id,
+                    question=question,
+                    answer=answer,
+                    tool_calls=tool_calls,
+                    sources=sources,
+                    category=category,
+                    memory_bundle=memory_bundle,
+                )
+
+                memory_debug = memory_bundle.get("debug_info", {})
+                memory_applied = any([
+                    memory_debug.get("memory_message_count", 0) > 0,
+                    memory_debug.get("fact_count", 0) > 0,
+                    memory_debug.get("summary_applied", False),
+                ])
+
+                yield {
+                    "type": "end",
+                    "question": question,
+                    "answer": answer,
+                    "session_id": thread_id,
+                    "sources": sources,
+                    "tool_calls": tool_calls,
+                    "tool_calls_count": len(tool_calls),
+                    "debug_info": {
+                        "requested_k": k,
+                        "applied_category": category,
+                        "retrieval_count": len(sources),
+                        "used_chat_mode": len(sources) == 0,
+                        "low_confidence": bool(low_confidence),
+                        "best_score": best_score,
+                        "fallback_reason": "no_retrieval" if len(sources) == 0 else ("low_confidence" if low_confidence else None),
+                        "retrieval_strategy": retrieval.get("retrieval_strategy"),
+                        "vector_result_count": retrieval.get("vector_result_count", 0),
+                        "keyword_result_count": retrieval.get("keyword_result_count", 0),
+                        "merged_result_count": retrieval.get("merged_result_count", 0),
+                        "rewritten_query": retrieval.get("rewritten_query"),
+                        "memory_applied": memory_applied,
+                        "memory_message_count": memory_debug.get("memory_message_count", 0),
+                        "fact_memory_count": memory_debug.get("fact_count", 0),
+                        "summary_memory_applied": memory_debug.get("summary_applied", False),
+                        "intent": "symptom_pipeline",
+                        "intent_reason": reason,
+                        "risk_level": risk.risk_level,
+                    },
+                }
+                return
+
             runtime_thread_id = self._build_runtime_thread_id(thread_id)
             config = {"configurable": {"thread_id": runtime_thread_id}}
             filter_dict = self.rag_chain.build_filter_dict(category)

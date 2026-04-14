@@ -152,3 +152,78 @@ class APIClient:
         except Exception as e:
             logger.error(f"全量更新失败: {e}")
             raise
+
+    def delete_by_rule(
+        self,
+        source_id: Optional[str] = None,
+        category: Optional[str] = None,
+        source: Optional[str] = None,
+        version: Optional[int] = None,
+    ) -> Dict:
+        """按文件生命周期维度删除知识库内容。"""
+        try:
+            payload = {}
+            if source_id:
+                payload["source_id"] = source_id
+            if category:
+                payload["category"] = category
+            if source:
+                payload["source"] = source
+            if version is not None:
+                payload["version"] = version
+
+            response = requests.post(
+                self.config.delete_by_rule_url,
+                json=payload,
+                timeout=self.config.timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"治理删除失败: {e}")
+            raise
+
+    def rollback_document(self, source_id: str, target_version: int) -> Dict:
+        """回滚到指定文件版本。"""
+        try:
+            response = requests.post(
+                self.config.rollback_document_url,
+                json={"source_id": source_id, "target_version": target_version},
+                timeout=self.config.timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"版本回滚失败: {e}")
+            raise
+
+    def get_document_versions(self, source_id: str) -> Dict:
+        """查询指定逻辑文件的版本历史。"""
+        try:
+            response = requests.get(
+                f"{self.config.document_versions_url}/{source_id}/versions",
+                timeout=self.config.timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"获取文件版本历史失败: {e}")
+            raise
+
+    def get_ingest_jobs(self, status: Optional[str] = None, limit: int = 20) -> Dict:
+        """查询知识库导入任务日志。"""
+        try:
+            params = {"limit": limit}
+            if status:
+                params["status"] = status
+
+            response = requests.get(
+                self.config.ingest_jobs_url,
+                params=params,
+                timeout=self.config.timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"获取知识库导入任务失败: {e}")
+            raise

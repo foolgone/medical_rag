@@ -1,7 +1,18 @@
 """知识库管理路由"""
 from fastapi import APIRouter, HTTPException
 from typing import Optional
-from api.schemas import IngestRequest, IngestResponse, StatsResponse, DeleteDocumentsRequest, DeleteDocumentsResponse
+from api.schemas import (
+    IngestRequest,
+    IngestResponse,
+    StatsResponse,
+    DeleteDocumentsRequest,
+    DeleteDocumentsResponse,
+    LifecycleDeleteRequest,
+    RollbackRequest,
+    RollbackResponse,
+    FileVersionListResponse,
+    IngestJobListResponse,
+)
 from rag.knowledge_base_update import KnowledgeBaseUpdateService
 from loguru import logger
 
@@ -24,11 +35,11 @@ async def ingest_documents(request: IngestRequest = None):
         if request is None:
             request = IngestRequest()
         kb_service = get_kb_service()
-        count = kb_service.rag_chain.ingest_documents(
+        result = kb_service.incremental_update(
             data_dir=request.data_dir,
             category=request.category
         )
-        return IngestResponse(success=True, ingested_count=count, message=f"导入{count}个文档块")
+        return IngestResponse(**result)
     except Exception as e:
         logger.error(f"导入失败: {e}")
         raise HTTPException(500, str(e))
@@ -38,14 +49,8 @@ async def ingest_file(filepath: str, category: str = "general"):
     """导入单个文件"""
     try:
         kb_service = get_kb_service()
-        rag_chain = kb_service.rag_chain
-        documents, is_new = rag_chain.document_loader.load_single_file(filepath)
-        if not documents:
-            return IngestResponse(success=False, ingested_count=0, message="文件加载失败")
-        documents = rag_chain.document_loader.add_metadata(documents, category)
-        split_docs = rag_chain.text_splitter.split_documents(documents)
-        doc_ids = rag_chain.vector_store.add_documents(split_docs)
-        return IngestResponse(success=True, ingested_count=len(doc_ids), message=f"导入{len(doc_ids)}个文档块")
+        result = kb_service.update_single_file(filepath, category)
+        return IngestResponse(**result)
     except Exception as e:
         logger.error(f"文件导入失败: {e}")
         raise HTTPException(500, str(e))
@@ -91,8 +96,70 @@ async def delete_documents(request: DeleteDocumentsRequest):
         success = kb_service.rag_chain.delete_documents(request.doc_ids)
         return DeleteDocumentsResponse(
             success=success,
-            message=f"删除{len(request.doc_ids)}个文档" if success else "删除失败"
+            message=f"删除{len(request.doc_ids)}个文档" if success else "删除失败",
+            deleted_records=len(request.doc_ids) if success else 0,
+            deleted_chunks=len(request.doc_ids) if success else 0,
         )
     except Exception as e:
         logger.error(f"删除文档失败: {e}")
+        raise HTTPException(500, str(e))
+
+
+@router.post("/documents/delete-by-rule", response_model=DeleteDocumentsResponse)
+async def delete_documents_by_rule(request: LifecycleDeleteRequest):
+    """按文件/分类/版本等治理维度删除知识库内容"""
+    try:
+        kb_service = get_kb_service()
+        result = kb_service.delete_by_rule(
+            source_id=request.source_id,
+            category=request.category,
+            source=request.source,
+            version=request.version,
+        )
+        return DeleteDocumentsResponse(**result)
+    except Exception as e:
+        logger.error(f"治理删除失败: {e}")
+        raise HTTPException(500, str(e))
+
+
+@router.post("/documents/rollback", response_model=RollbackResponse)
+async def rollback_document(request: RollbackRequest):
+    """回滚到指定文件版本"""
+    try:
+        kb_service = get_kb_service()
+        result = kb_service.rollback_file(
+            source_id=request.source_id,
+            target_version=request.target_version,
+        )
+        return RollbackResponse(**result)
+    except Exception as e:
+        logger.error(f"回滚文件失败: {e}")
+        raise HTTPException(500, str(e))
+
+
+@router.get("/documents/{source_id}/versions", response_model=FileVersionListResponse)
+async def get_document_versions(source_id: str):
+    """查询指定逻辑文件的全部版本历史"""
+    try:
+        kb_service = get_kb_service()
+        versions = kb_service.list_versions(source_id)
+        return FileVersionListResponse(
+            source_id=source_id,
+            total=len(versions),
+            versions=versions,
+        )
+    except Exception as e:
+        logger.error(f"获取文件版本历史失败: {e}")
+        raise HTTPException(500, str(e))
+
+
+@router.get("/ingest-jobs", response_model=IngestJobListResponse)
+async def get_ingest_jobs(status: Optional[str] = None, limit: int = 20):
+    """查询知识库导入任务日志"""
+    try:
+        kb_service = get_kb_service()
+        jobs = kb_service.list_ingest_jobs(status=status, limit=limit)
+        return IngestJobListResponse(total=len(jobs), jobs=jobs)
+    except Exception as e:
+        logger.error(f"获取知识库导入任务失败: {e}")
         raise HTTPException(500, str(e))

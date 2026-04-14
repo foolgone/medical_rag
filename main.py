@@ -2,7 +2,10 @@
 FastAPI应用主文件
 """
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+import time
+import uuid
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 from database.connection import init_db
@@ -57,6 +60,41 @@ app = FastAPI(
     debug=settings.DEBUG,
     lifespan=lifespan
 )
+
+
+@app.middleware("http")
+async def request_context_middleware(request: Request, call_next):
+    """第9步MVP：请求级 request_id + 耗时统计。"""
+    request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+    request.state.request_id = request_id
+
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        logger.error(
+            "request_id={} method={} path={} duration_ms={} status=exception",
+            request_id,
+            request.method,
+            request.url.path,
+            duration_ms,
+        )
+        raise
+
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    logger.info(
+        "request_id={} method={} path={} duration_ms={} status={}",
+        request_id,
+        request.method,
+        request.url.path,
+        duration_ms,
+        getattr(response, "status_code", "unknown"),
+    )
+
+    response.headers["X-Request-Id"] = request_id
+    response.headers["X-Duration-Ms"] = str(duration_ms)
+    return response
 
 # 配置CORS
 app.add_middleware(

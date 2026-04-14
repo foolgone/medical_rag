@@ -53,3 +53,19 @@ class AppConfig:
     @property
     def update_full_url(self) -> str:
         return f"{self.api_base_url}/update/full"
+
+    @property
+    def delete_by_rule_url(self) -> str:
+        return f"{self.api_base_url}/documents/delete-by-rule"
+
+    @property
+    def rollback_document_url(self) -> str:
+        return f"{self.api_base_url}/documents/rollback"
+
+    @property
+    def document_versions_url(self) -> str:
+        return f"{self.api_base_url}/documents"
+
+    @property
+    def ingest_jobs_url(self) -> str:
+        return f"{self.api_base_url}/ingest-jobs"
