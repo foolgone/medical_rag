@@ -1,0 +1,21 @@
+services:
+  db:
+    image: pgvector/pgvector:pg15
+    container_name: medical_rag_db
+    environment:
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypassword
+      POSTGRES_DB: medical_rag
+    ports:
+      - "5432:5432"
+    volumes:
+      - medical_rag_db_data:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  medical_rag_db_data:
