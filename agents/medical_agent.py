@@ -378,7 +378,7 @@ class MedicalAgent:
             # 回溯提取最后一条真正的文本回答，避免把工具调用块当正文
             answer = self._extract_final_answer(result["messages"])
             if low_confidence and answer:
-                answer = f"{self.rag_chain.build_low_confidence_notice(best_score)}\n\n{answer}"
+                answer = f"{answer}\n\n{self.rag_chain.build_low_confidence_notice(best_score)}"
 
             # 提取工具调用信息
             tool_calls = []
@@ -611,7 +611,7 @@ class MedicalAgent:
             answer = "⚠️ 当前生成回答失败，建议尽快咨询专业医生或前往线下就诊。"
 
         if low_confidence and answer:
-            answer = f"{self.rag_chain.build_low_confidence_notice(best_score)}\n\n{answer}"
+            answer = f"{answer}\n\n{self.rag_chain.build_low_confidence_notice(best_score)}"
 
         self._save_memory_interaction(
             session_id=thread_id,
@@ -788,11 +788,6 @@ class MedicalAgent:
                 tool_calls.append(stage4)
                 yield {"type": "tool_call", "tools": [stage4]}
 
-                if low_confidence:
-                    notice = self.rag_chain.build_low_confidence_notice(best_score)
-                    answer_parts.append(f"{notice}\n\n")
-                    yield {"type": "content", "content": f"{notice}\n\n"}
-
                 pipeline_context = (
                     "你将基于以下确定性分析结果与知识库内容，为用户给出专业、清晰、可执行的建议。\n"
                     f"- 症状: {extraction.symptoms_text}\n"
@@ -827,6 +822,12 @@ class MedicalAgent:
                     logger.error("症状流水线流式生成失败: {}", e)
                     yield {"type": "error", "error": str(e)}
                     return
+
+                if low_confidence:
+                    notice = self.rag_chain.build_low_confidence_notice(best_score)
+                    suffix = f"\n\n{notice}"
+                    answer_parts.append(suffix)
+                    yield {"type": "content", "content": suffix}
 
                 answer = "".join(answer_parts).strip()
 
@@ -909,14 +910,6 @@ class MedicalAgent:
                     "sources": sources
                 }
 
-            if low_confidence:
-                notice = self.rag_chain.build_low_confidence_notice(best_score)
-                answer_parts.append(f"{notice}\n\n")
-                yield {
-                    "type": "content",
-                    "content": f"{notice}\n\n"
-                }
-
             for event in self.agent.stream(
                 {"messages": messages},
                 config=config,
@@ -953,6 +946,12 @@ class MedicalAgent:
                             "type": "tool_call",
                             "tools": [tool_call]
                         }
+
+            if low_confidence:
+                notice = self.rag_chain.build_low_confidence_notice(best_score)
+                suffix = f"\n\n{notice}"
+                answer_parts.append(suffix)
+                yield {"type": "content", "content": suffix}
 
             answer = "".join(answer_parts).strip()
 

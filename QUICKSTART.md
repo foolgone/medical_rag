@@ -15,8 +15,8 @@
 ## 🏗️ 技术栈
 
 - **框架**: LangChain 1.x, FastAPI
-- **LLM**: Ollama (llama3.1)
-- **嵌入模型**: Ollama (nomic-embed-text)
+- **LLM**: Ollama (qwen2.5:7b)
+- **嵌入模型**: Ollama (bge-m3:latest)
 - **向量数据库**: PostgreSQL + pgvector
 - **数据验证**: Pydantic
 - **Python版本**: 3.11+
@@ -71,8 +71,8 @@ PythonProject/
    ```
 3. 拉取所需模型:
    ```bash
-   ollama pull nomic-embed-text
-   ollama pull llama3.1
+  ollama pull bge-m3:latest
+  ollama pull qwen2.5:7b
    ```
 
 #### 1.3 安装PostgreSQL
@@ -83,7 +83,7 @@ PythonProject/
    ```
 3. 创建数据库:
    ```sql
-   CREATE DATABASE medical_rag_db;
+  CREATE DATABASE medical_rag;
    ```
 
 ### 步骤2: 项目初始化
@@ -120,12 +120,12 @@ cp .env.example .env    # Linux/Mac
 
 ```env
 # 数据库配置
-DATABASE_URL=postgresql://user:password@localhost:5432/medical_rag_db
+DATABASE_URL=postgresql://user:password@localhost:5432/medical_rag
 
 # Ollama配置
 OLLAMA_BASE_URL=http://localhost:11434
-EMBEDDING_MODEL=nomic-embed-text
-LLM_MODEL=llama3.1
+EMBEDDING_MODEL=bge-m3:latest
+LLM_MODEL=qwen2.5:7b
 
 # RAG配置
 CHUNK_SIZE=500
@@ -192,14 +192,26 @@ curl -X POST "http://localhost:8000/api/v1/query" \
 {
   "question": "感冒了应该吃什么药？",
   "answer": "根据医学指南，感冒治疗以对症治疗为主...",
-  "context_count": 5,
+  "session_id": "session_001",
   "sources": [
     {
       "content": "常用药物包括解热镇痛药...",
       "source": "感冒诊疗指南.txt",
-      "category": "general"
+      "category": "general",
+      "page": null,
+      "chunk_id": "chunk_xxx",
+      "score": 0.81
     }
-  ]
+  ],
+  "tool_calls": [],
+  "tool_calls_count": 0,
+  "debug_info": {
+    "requested_k": 5,
+    "retrieval_count": 1,
+    "used_chat_mode": false,
+    "best_score": 0.81,
+    "fallback_reason": null
+  }
 }
 ```
 
@@ -214,9 +226,13 @@ curl -X GET "http://localhost:8000/api/v1/stats"
 ```json
 {
   "collection_name": "medical_documents",
-  "embedding_model": "nomic-embed-text",
-  "llm_model": "llama3.1",
-  "top_k": 5
+  "embedding_model": "bge-m3:latest",
+  "llm_model": "qwen2.5:7b",
+  "top_k": 5,
+  "total_files": 0,
+  "vectorized_files": 0,
+  "pending_files": 0,
+  "document_chunks": 0
 }
 ```
 
@@ -247,8 +263,8 @@ TOP_K=5              # 每次检索返回的文档数量
 
 ### 更换模型
 ```env
-EMBEDDING_MODEL=nomic-embed-text   # 嵌入模型
-LLM_MODEL=llama3.1                 # LLM模型
+EMBEDDING_MODEL=bge-m3:latest      # 嵌入模型
+LLM_MODEL=qwen2.5:7b               # LLM模型
 ```
 
 ## 📝 添加自定义医疗文档

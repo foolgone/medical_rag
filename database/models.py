@@ -18,7 +18,7 @@ class MedicalDocument(Base):
     content = Column(Text, nullable=False, comment="文档内容")
     source = Column(String(1000), comment="文档来源")
     category = Column(String(200), comment="文档分类")
-    embedding = Column(Vector(768), comment="向量嵌入")  # nomic-embed-text 维度为768
+    embedding = Column(Vector(768), comment="向量嵌入（维度取决于所用 embedding 模型）")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
     

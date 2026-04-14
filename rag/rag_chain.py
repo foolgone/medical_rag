@@ -146,7 +146,7 @@ class MedicalRAGChain:
                 # 生成回答
                 answer = self.llm_client.generate_with_context(question, context)
                 if low_confidence:
-                    answer = f"{self.build_low_confidence_notice(best_score)}\n\n{answer}"
+                    answer = f"{answer}\n\n{self.build_low_confidence_notice(best_score)}"
 
             # 保存对话历史
             if session_id:
@@ -235,19 +235,20 @@ class MedicalRAGChain:
                 context = ""
             else:
                 context = self.retriever.format_context(docs)
-                if low_confidence:
-                    notice = self.build_low_confidence_notice(best_score)
-                    answer_parts.append(f"{notice}\n\n")
-                    yield {
-                        "type": "content",
-                        "content": f"{notice}\n\n",
-                    }
-
                 async for chunk in self.llm_client.generate_with_context_stream(question, context):
                     answer_parts.append(chunk)
                     yield {
                         "type": "content",
                         "content": chunk,
+                    }
+
+                if low_confidence:
+                    notice = self.build_low_confidence_notice(best_score)
+                    suffix = f"\n\n{notice}"
+                    answer_parts.append(suffix)
+                    yield {
+                        "type": "content",
+                        "content": suffix,
                     }
 
             answer = "".join(answer_parts).strip()

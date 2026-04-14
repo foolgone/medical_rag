@@ -46,14 +46,14 @@
 | 前端 | Streamlit |
 | Agent | LangChain `create_agent` + LangGraph checkpoint |
 | LLM | Ollama `qwen2.5:7b` |
-| Embedding | Ollama `bag-m3:latest` |
+| Embedding | Ollama `bge-m3:latest` |
 | 向量库 | PostgreSQL + pgvector + `langchain-postgres` |
 | 文档处理 | `pypdf`、`docx2txt`、`langchain-community` |
 | 日志 | Loguru |
 
 说明：
 
-- 代码和 `.env.example` 当前默认嵌入模型写的是 `bag-m3:latest`
+- 代码和 `.env.example` 当前默认嵌入模型写的是 `bge-m3:latest`
 - 如果你本地实际安装的是别的 Ollama embedding 模型，请把 `.env` 里的 `EMBEDDING_MODEL` 改成你的真实模型名
 
 ## 系统架构
@@ -196,12 +196,54 @@ Medical_rag/
 
 ```bash
 ollama pull qwen2.5:7b
-ollama pull bag-m3:latest
+ollama pull bge-m3:latest
 ```
 
-如果 `bag-m3:latest` 在你的 Ollama 环境中不可用，可以换成你本地已安装的 embedding 模型，并同步修改 `.env`。
+如果 `bge-m3:latest` 在你的 Ollama 环境中不可用，可以换成你本地已安装的 embedding 模型，并同步修改 `.env`。
 
 ## 安装与启动
+
+### 0. 3 分钟启动（推荐：本地 Ollama + Compose 起数据库）
+
+1) 确认 Ollama 已启动：
+
+```bash
+ollama serve
+```
+
+2) 拉取模型：
+
+```bash
+ollama pull qwen2.5:7b
+ollama pull bge-m3:latest
+```
+
+3) 启动 PostgreSQL + pgvector：
+
+```bash
+docker compose up -d
+```
+
+4) 创建并配置 `.env`：
+
+```bash
+copy .env.example .env
+```
+
+5) 启动后端：
+
+```bash
+python main.py
+```
+
+启动后访问：`http://localhost:8000/docs`
+
+### 启动前检查 / 失败排查（常见）
+
+- pgvector 扩展是否可用：首次用 compose 初始化后会自动执行 `CREATE EXTENSION vector;`；如你使用的是自建数据库，请手动创建扩展。
+- 端口占用：`11434`（Ollama）、`5432`（Postgres）、`8000`（API）。
+- Ollama 模型是否存在：`ollama list`，缺少则重新 `ollama pull ...`。
+- 数据库容器是否健康：`docker compose ps`；失败可查看 `docker compose logs -f db`。
 
 ### 1. 创建虚拟环境并安装依赖
 
@@ -240,7 +282,7 @@ copy .env.example .env
 ```env
 DATABASE_URL=postgresql://username:password@localhost:5432/medical_rag
 OLLAMA_BASE_URL=http://localhost:11434
-EMBEDDING_MODEL=bag-m3:latest
+EMBEDDING_MODEL=bge-m3:latest
 LLM_MODEL=qwen2.5:7b
 API_HOST=0.0.0.0
 API_PORT=8000
@@ -250,8 +292,8 @@ LOG_LEVEL=INFO
 
 注意：
 
-- `.env.example` 当前数据库地址是一个局域网 IP 示例，不适合直接拿来运行
-- 必须改成你自己的数据库连接串
+- 后端不提供 `DATABASE_URL` 的代码默认值，必须通过 `.env` 提供
+- `.env.example` 的 `DATABASE_URL` 是 `localhost` 示例，请改成你本机或容器环境中的真实连接串
 
 ### 4. 可选：执行初始化脚本
 
@@ -500,9 +542,9 @@ python tests/test_agent.py
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `DATABASE_URL` | `postgresql://myuser:mypassword@192.168.150.100:5432/medical_rag` | PostgreSQL 连接串 |
+| `DATABASE_URL` | （必填，来自 `.env`） | PostgreSQL 连接串 |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama 服务地址 |
-| `EMBEDDING_MODEL` | `bag-m3:latest` | 嵌入模型 |
+| `EMBEDDING_MODEL` | `bge-m3:latest` | 嵌入模型 |
 | `LLM_MODEL` | `qwen2.5:7b` | 对话模型 |
 | `CHUNK_SIZE` | `500` | 文本块大小 |
 | `CHUNK_OVERLAP` | `50` | 文本块重叠 |
@@ -520,7 +562,7 @@ python tests/test_agent.py
   - 当前 `requirements.txt` 没有显式声明
 - `update/full` 虽然有 `clear_first` 参数，但当前清空逻辑还是占位，没有真正清空现有向量数据
 - 前端里有一些偏展示性的设置项，真正影响后端行为的主要还是 `query_mode`、`query_category`、`top_k`、`enable_streaming`、`show_tool_calls`
-- 默认数据库地址不是 localhost，请务必修改 `.env`
+- `DATABASE_URL` 必须在 `.env` 中配置，否则后端启动会直接失败
 
 ## 开发建议
 
