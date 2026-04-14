@@ -3,7 +3,7 @@
 支持PDF、Word、TXT等格式的医疗文档加载
 """
 from pathlib import Path
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from langchain_community.document_loaders import (
     PyPDFLoader,
     Docx2txtLoader,
@@ -17,8 +17,10 @@ from rag.md5_checker import MD5Checker
 
 class MedicalDocumentLoader:
     """医疗文档加载器"""
+
+    DEFAULT_DATA_DIR = "data/medical_docs"
     
-    def __init__(self, data_dir: str = "data/medical_docs", enable_md5_check: bool = True):
+    def __init__(self, data_dir: Optional[str] = DEFAULT_DATA_DIR, enable_md5_check: bool = True):
         """
         初始化文档加载器
         
@@ -26,12 +28,20 @@ class MedicalDocumentLoader:
             data_dir: 文档目录路径
             enable_md5_check: 是否启用MD5去重检查
         """
-        self.data_dir = Path(data_dir)
+        resolved_data_dir = data_dir or self.DEFAULT_DATA_DIR
+        self.data_dir = Path(resolved_data_dir)
         self.enable_md5_check = enable_md5_check
         self.md5_checker = MD5Checker() if enable_md5_check else None
+        self.last_load_summary: Dict[str, object] = {
+            "success_count": 0,
+            "skip_count": 0,
+            "failed_count": 0,
+            "failed_files": [],
+            "document_count": 0,
+        }
         
         if not self.data_dir.exists():
-            logger.warning(f"文档目录不存在: {data_dir}")
+            logger.warning(f"文档目录不存在: {resolved_data_dir}")
             self.data_dir.mkdir(parents=True, exist_ok=True)
     
     def load_pdf(self, file_path: str) -> List[Document]:
@@ -80,6 +90,7 @@ class MedicalDocumentLoader:
         all_documents = []
         success_count = 0
         skip_count = 0
+        failed_files = []
         
         # 加载PDF文件
         pdf_files = list(self.data_dir.glob("**/*.pdf"))
@@ -95,6 +106,8 @@ class MedicalDocumentLoader:
                 if self.enable_md5_check:
                     self.md5_checker.add_file_record(str(pdf_file))
                 success_count += 1
+            else:
+                failed_files.append(pdf_file.name)
         
         # 加载Word文件
         docx_files = list(self.data_dir.glob("**/*.docx"))
@@ -110,6 +123,8 @@ class MedicalDocumentLoader:
                 if self.enable_md5_check:
                     self.md5_checker.add_file_record(str(docx_file))
                 success_count += 1
+            else:
+                failed_files.append(docx_file.name)
         
         # 加载TXT文件
         txt_files = list(self.data_dir.glob("**/*.txt"))
@@ -125,7 +140,16 @@ class MedicalDocumentLoader:
                 if self.enable_md5_check:
                     self.md5_checker.add_file_record(str(txt_file))
                 success_count += 1
+            else:
+                failed_files.append(txt_file.name)
         
+        self.last_load_summary = {
+            "success_count": success_count,
+            "skip_count": skip_count,
+            "failed_count": len(failed_files),
+            "failed_files": failed_files,
+            "document_count": len(all_documents),
+        }
         logger.info(f"文档加载完成 - 成功: {success_count}, 跳过: {skip_count}, 总文档块: {len(all_documents)}")
         return all_documents, success_count, skip_count
     

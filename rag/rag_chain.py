@@ -356,7 +356,8 @@ class MedicalRAGChain:
                     session_id=session_id,
                     question=question,
                     answer=answer,
-                    context=context
+                    context=context,
+                    record_type="rag"
                 )
                 db.add(conversation)
             logger.debug(f"对话历史已保存，session_id: {session_id}")
@@ -395,7 +396,8 @@ class MedicalRAGChain:
                 if file_path.is_file() and file_path.suffix.lower() in supported_extensions
             ]
 
-            md5_checker = self.document_loader.md5_checker or MD5Checker()
+            # 统计接口需要读取最新的MD5记录，避免复用初始化时的缓存状态。
+            md5_checker = MD5Checker()
             vectorized_files = 0
             categories = set()
             last_updated = None

@@ -18,6 +18,8 @@ async def upload_file(file: UploadFile = File(...), category: str = "general"):
         logger.info(f"收到文件上传: {file.filename}")
         result = await file_service.save_uploaded_file(file, category)
         return FileUploadResponse(**result, success=True, message=f"上传成功: {result['filename']}")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"文件上传失败: {e}")
         raise HTTPException(500, str(e))
@@ -35,6 +37,8 @@ async def upload_batch(files: List[UploadFile] = File(...), category: str = "gen
             failed_count=len(results) - success_count,
             results=[FileUploadResponse(**r) for r in results if 'filepath' in r]
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"批量上传失败: {e}")
         raise HTTPException(500, str(e))

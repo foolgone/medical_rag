@@ -66,16 +66,27 @@ def handle_batch_vectorization(api_client: APIClient):
     try:
         with st.spinner("⚡ 正在更新知识库..."):
             result = api_client.incremental_update()
+            success = result.get('success', False)
+            message = result.get('message', '更新成功')
 
-            st.success(f"✅ {result.get('message', '更新成功')}")
+            if success:
+                st.success(f"✅ {message}")
+                state_manager.add_operation_log(
+                    "一键更新知识库",
+                    f"✅ {message}",
+                    True
+                )
+
+                time.sleep(1.5)
+                st.rerun()
+                return
+
+            st.error(f"❌ {message}")
             state_manager.add_operation_log(
                 "一键更新知识库",
-                f"✅ {result.get('message', '更新成功')}",
-                True
+                f"❌ {message}",
+                False
             )
-
-            time.sleep(1.5)
-            st.rerun()
 
     except Exception as e:
         st.error(f"❌ 更新失败: {e}")

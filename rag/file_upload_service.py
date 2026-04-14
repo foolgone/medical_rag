@@ -3,6 +3,7 @@
 处理文件上传、验证和存储
 """
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import List, Dict
@@ -15,6 +16,7 @@ class FileUploadService:
     
     ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.txt'}
     MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+    INVALID_FILENAME_CHARS = r'[<>:"/\\|?*\x00-\x1f]'
     
     def __init__(self, upload_dir: str = "data/medical_docs"):
         """
@@ -55,6 +57,23 @@ class FileUploadService:
                 status_code=400,
                 detail=f"文件过大: {file_size / 1024 / 1024:.2f}MB，最大允许: {self.MAX_FILE_SIZE / 1024 / 1024}MB"
             )
+
+    @classmethod
+    def sanitize_filename(cls, filename: str) -> str:
+        """清洗Windows不允许的文件名字符，保留扩展名。"""
+        original_name = Path(filename or "uploaded_file")
+        stem = re.sub(cls.INVALID_FILENAME_CHARS, "_", original_name.stem).strip(" .")
+        suffix = re.sub(cls.INVALID_FILENAME_CHARS, "_", original_name.suffix)
+
+        if not stem:
+            stem = "uploaded_file"
+        if not suffix:
+            suffix = ".txt"
+
+        sanitized = f"{stem}{suffix}"
+        if sanitized != (filename or ""):
+            logger.warning(f"文件名包含非法字符，已重命名: {filename} -> {sanitized}")
+        return sanitized
     
     async def save_uploaded_file(self, file: UploadFile, category: str = "general") -> Dict:
         """
@@ -77,15 +96,15 @@ class FileUploadService:
             
             # 生成安全的文件名（保留原始扩展名）
             original_filename = file.filename
-            file_ext = Path(original_filename).suffix
-            safe_filename = original_filename  # 可以添加时间戳等前缀避免冲突
+            safe_filename = self.sanitize_filename(original_filename)
+            file_ext = Path(safe_filename).suffix
             
             file_path = category_dir / safe_filename
             
             # 如果文件已存在，添加数字后缀
             counter = 1
             while file_path.exists():
-                file_path = category_dir / f"{Path(original_filename).stem}_{counter}{file_ext}"
+                file_path = category_dir / f"{Path(safe_filename).stem}_{counter}{file_ext}"
                 counter += 1
             
             # 保存文件

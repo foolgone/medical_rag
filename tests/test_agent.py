@@ -10,6 +10,7 @@ def test_agent_initialization():
     agent = MedicalAgent(model_name="qwen2.5:7b", temperature=0.7)
     assert agent is not None
     assert len(agent.tools) == 6  # 4个医疗工具 + 2个RAG工具
+    assert agent.memory is not None
     print(f"✅ Agent初始化成功，加载{len(agent.tools)}个工具")
 
 
@@ -61,6 +62,8 @@ async def test_agent_query():
         assert result["tool_calls_count"] >= 0
         assert "sources" in result
         assert "debug_info" in result
+        assert "memory_applied" in result["debug_info"]
+        assert "memory_message_count" in result["debug_info"]
         print(f"✅ Agent问答测试通过")
         print(f"回答: {result['answer'][:100]}...")
         print(f"调用工具数: {result['tool_calls_count']}")

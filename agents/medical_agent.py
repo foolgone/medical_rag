@@ -2,6 +2,7 @@
 医疗Agent - 基于LangGraph的Tool Calling Agent
 """
 import json
+import uuid
 from typing import Any, Dict, List
 
 from langchain_ollama import ChatOllama
@@ -11,6 +12,7 @@ from loguru import logger
 
 from langchain_core.documents import Document
 
+from memory.conversation_memory import ConversationMemory
 from rag.rag_chain import MedicalRAGChain
 from tools.medical_tools import medical_tools
 from tools.rag_tool import search_medical_knowledge, get_disease_info
@@ -45,7 +47,10 @@ class MedicalAgent:
         # 4. 初始化RAG链，用于统一主链路检索和统计
         self.rag_chain = MedicalRAGChain()
 
-        # 5. 定义系统提示词
+        # 5. 初始化数据库记忆，用于跨轮次持久上下文
+        self.memory = ConversationMemory(window_size=5)
+
+        # 6. 定义系统提示词
         self.system_prompt = """你是一个专业的医疗智能助手，具备以下能力：
 
 1. **症状分析** - 分析患者症状并提供初步建议
@@ -64,7 +69,7 @@ class MedicalAgent:
 
 请根据用户问题，合理选择和使用工具。"""
 
-        # 6. 创建ReAct Agent
+        # 7. 创建ReAct Agent
         self.agent = create_agent(
             self.llm,
             self.tools,
@@ -73,6 +78,16 @@ class MedicalAgent:
         )
 
         logger.info("医疗Agent初始化完成")
+
+    @staticmethod
+    def _build_runtime_thread_id(session_id: str) -> str:
+        """
+        构建单次调用的运行线程ID
+
+        使用数据库记忆承担跨轮次上下文，MemorySaver 仅保留单次运行内部状态，
+        避免同一历史在数据库和 LangGraph 检查点中重复累积。
+        """
+        return f"{session_id}:{uuid.uuid4().hex}"
 
     @staticmethod
     def _normalize_tool_calls(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -147,9 +162,161 @@ class MedicalAgent:
             sort_keys=True
         )
 
-    def _build_messages(self, question: str, docs: List[Document], category: str = None) -> List[Dict[str, str]]:
+    def _get_memory_bundle(self, session_id: str, question: str) -> Dict[str, Any]:
+        """获取当前会话的分层记忆包。"""
+        if not session_id:
+            return {
+                "short_term_messages": [],
+                "fact_memory": [],
+                "summary_memory": "",
+                "debug_info": {
+                    "memory_message_count": 0,
+                    "fact_count": 0,
+                    "summary_applied": False,
+                }
+            }
+
+        if hasattr(self.memory, "build_memory_bundle"):
+            bundle = self.memory.build_memory_bundle(session_id, query=question)
+        else:
+            messages = self.memory.get_short_term_memory(session_id)
+            bundle = {
+                "short_term_messages": messages,
+                "fact_memory": [],
+                "summary_memory": "",
+                "debug_info": {
+                    "memory_message_count": len(messages),
+                    "fact_count": 0,
+                    "summary_applied": False,
+                }
+            }
+
+        logger.debug(
+            "加载数据库分层记忆，session_id: {}, 短期消息: {}, 事实数: {}, 摘要: {}",
+            session_id,
+            len(bundle.get("short_term_messages", [])),
+            len(bundle.get("fact_memory", [])),
+            bool(bundle.get("summary_memory")),
+        )
+        return bundle
+
+    def _build_memory_reasoning_steps(
+        self,
+        sources: List[Dict[str, Any]],
+        category: str = None,
+        memory_bundle: Dict[str, Any] = None
+    ) -> List[str]:
+        """构建可落库的推理摘要"""
+        memory_debug = (memory_bundle or {}).get("debug_info", {})
+        reasoning_steps = [
+            f"memory_messages={memory_debug.get('memory_message_count', 0)}",
+            f"fact_memory={memory_debug.get('fact_count', 0)}",
+            f"summary_applied={memory_debug.get('summary_applied', False)}",
+            f"retrieval_count={len(sources)}",
+            f"category={category or 'all'}",
+        ]
+
+        if sources:
+            reasoning_steps.append(
+                "retrieval_sources=" + ", ".join(source.get("source", "未知") for source in sources[:3])
+            )
+
+        return reasoning_steps
+
+    def _build_memory_metadata(
+        self,
+        sources: List[Dict[str, Any]],
+        category: str = None,
+        memory_bundle: Dict[str, Any] = None
+    ) -> Dict[str, Any]:
+        """构建结构化记忆元数据"""
+        memory_debug = (memory_bundle or {}).get("debug_info", {})
+        return {
+            "memory_message_count": memory_debug.get("memory_message_count", 0),
+            "fact_memory_count": memory_debug.get("fact_count", 0),
+            "summary_memory_applied": memory_debug.get("summary_applied", False),
+            "retrieval_count": len(sources),
+            "category": category or "all",
+            "sources": [source.get("source", "未知") for source in sources[:5]],
+        }
+
+    def _save_memory_interaction(
+        self,
+        session_id: str,
+        question: str,
+        answer: str,
+        tool_calls: List[Dict[str, Any]],
+        sources: List[Dict[str, Any]],
+        category: str = None,
+        memory_bundle: Dict[str, Any] = None
+    ) -> None:
+        """将 Agent 本轮交互写入数据库记忆"""
+        if not session_id:
+            return
+
+        saved = self.memory.save_agent_interaction(
+            session_id=session_id,
+            question=question,
+            answer=answer,
+            tools_used=[tool["name"] for tool in tool_calls],
+            reasoning_steps=self._build_memory_reasoning_steps(
+                sources=sources,
+                category=category,
+                memory_bundle=memory_bundle
+            ),
+            memory_metadata=self._build_memory_metadata(
+                sources=sources,
+                category=category,
+                memory_bundle=memory_bundle
+            )
+        )
+
+        if not saved:
+            logger.warning(f"Agent交互写入数据库失败，session_id: {session_id}")
+
+    def _build_messages(
+        self,
+        question: str,
+        docs: List[Document],
+        category: str = None,
+        memory_bundle: Dict[str, Any] = None
+    ) -> List[Dict[str, str]]:
         """构建Agent输入消息"""
         messages: List[Dict[str, str]] = []
+
+        fact_memory = (memory_bundle or {}).get("fact_memory", [])
+        if fact_memory:
+            if hasattr(self.memory, "format_fact_memory"):
+                fact_text = self.memory.format_fact_memory(fact_memory)
+            else:
+                fact_text = "\n".join(f"- {item.get('fact_value', '')}" for item in fact_memory)
+
+            messages.append({
+                "role": "system",
+                "content": (
+                    "以下是用户已确认的稳定背景信息，请优先将其视为高优先级上下文，"
+                    "回答时保持一致，不要忽略：\n"
+                    f"{fact_text}"
+                )
+            })
+
+        summary_memory = (memory_bundle or {}).get("summary_memory", "")
+        if summary_memory:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "以下是当前会话此前阶段的摘要，请保持上下文连续，避免重复询问：\n"
+                    f"{summary_memory}"
+                )
+            })
+
+        memory_messages = (memory_bundle or {}).get("short_term_messages", [])
+        if memory_messages:
+            messages.append({
+                "role": "system",
+                "content": "以下是当前用户最近几轮对话，请结合这些历史保持回答连续一致，不要忽略用户此前已经说明的信息。"
+            })
+            messages.extend(memory_messages)
 
         if docs:
             context = self.rag_chain.retriever.format_context(docs)
@@ -177,11 +344,13 @@ class MedicalAgent:
         """执行统一问答主链路"""
         logger.info(f"Agent处理问题: {question[:50]}...")
 
-        # 配置线程ID
-        config = {"configurable": {"thread_id": thread_id}}
+        # 单轮运行使用独立thread_id，跨轮记忆由数据库负责
+        runtime_thread_id = self._build_runtime_thread_id(thread_id)
+        config = {"configurable": {"thread_id": runtime_thread_id}}
         filter_dict = self.rag_chain.build_filter_dict(category)
 
         try:
+            memory_bundle = self._get_memory_bundle(thread_id, question)
             docs = self.rag_chain.retriever.retrieve(
                 query=question,
                 k=k,
@@ -190,7 +359,7 @@ class MedicalAgent:
 
             # 调用Agent
             result = self.agent.invoke(
-                {"messages": self._build_messages(question, docs, category)},
+                {"messages": self._build_messages(question, docs, category, memory_bundle)},
                 config=config
             )
 
@@ -206,6 +375,23 @@ class MedicalAgent:
             normalized_tool_calls = self._normalize_tool_calls(tool_calls)
             sources = self.rag_chain.serialize_sources(docs)
 
+            self._save_memory_interaction(
+                session_id=thread_id,
+                question=question,
+                answer=answer,
+                tool_calls=normalized_tool_calls,
+                sources=sources,
+                category=category,
+                memory_bundle=memory_bundle
+            )
+
+            memory_debug = memory_bundle.get("debug_info", {})
+            memory_applied = any([
+                memory_debug.get("memory_message_count", 0) > 0,
+                memory_debug.get("fact_count", 0) > 0,
+                memory_debug.get("summary_applied", False),
+            ])
+
             logger.info(f"Agent回答完成，调用工具数: {len(tool_calls)}")
 
             return {
@@ -219,7 +405,11 @@ class MedicalAgent:
                     "requested_k": k,
                     "applied_category": category,
                     "retrieval_count": len(sources),
-                    "used_chat_mode": len(sources) == 0
+                    "used_chat_mode": len(sources) == 0,
+                    "memory_applied": memory_applied,
+                    "memory_message_count": memory_debug.get("memory_message_count", 0),
+                    "fact_memory_count": memory_debug.get("fact_count", 0),
+                    "summary_memory_applied": memory_debug.get("summary_applied", False),
                 }
             }
         except Exception as e:
@@ -235,7 +425,11 @@ class MedicalAgent:
                     "requested_k": k,
                     "applied_category": category,
                     "retrieval_count": 0,
-                    "used_chat_mode": True
+                    "used_chat_mode": True,
+                    "memory_applied": False,
+                    "memory_message_count": 0,
+                    "fact_memory_count": 0,
+                    "summary_memory_applied": False,
                 }
             }
 
@@ -260,15 +454,17 @@ class MedicalAgent:
         流式查询（输出标准化事件）
         """
         try:
-            config = {"configurable": {"thread_id": thread_id}}
+            runtime_thread_id = self._build_runtime_thread_id(thread_id)
+            config = {"configurable": {"thread_id": runtime_thread_id}}
             filter_dict = self.rag_chain.build_filter_dict(category)
+            memory_bundle = self._get_memory_bundle(thread_id, question)
             docs = self.rag_chain.retriever.retrieve(
                 query=question,
                 k=k,
                 filter_dict=filter_dict
             )
             sources = self.rag_chain.serialize_sources(docs)
-            messages = self._build_messages(question, docs, category)
+            messages = self._build_messages(question, docs, category, memory_bundle)
             answer_parts: List[str] = []
             tool_calls: List[Dict[str, Any]] = []
             seen_tool_calls = set()
@@ -324,6 +520,23 @@ class MedicalAgent:
 
             answer = "".join(answer_parts).strip()
 
+            self._save_memory_interaction(
+                session_id=thread_id,
+                question=question,
+                answer=answer,
+                tool_calls=tool_calls,
+                sources=sources,
+                category=category,
+                memory_bundle=memory_bundle
+            )
+
+            memory_debug = memory_bundle.get("debug_info", {})
+            memory_applied = any([
+                memory_debug.get("memory_message_count", 0) > 0,
+                memory_debug.get("fact_count", 0) > 0,
+                memory_debug.get("summary_applied", False),
+            ])
+
             yield {
                 "type": "end",
                 "question": question,
@@ -336,7 +549,11 @@ class MedicalAgent:
                     "requested_k": k,
                     "applied_category": category,
                     "retrieval_count": len(sources),
-                    "used_chat_mode": len(sources) == 0
+                    "used_chat_mode": len(sources) == 0,
+                    "memory_applied": memory_applied,
+                    "memory_message_count": memory_debug.get("memory_message_count", 0),
+                    "fact_memory_count": memory_debug.get("fact_count", 0),
+                    "summary_memory_applied": memory_debug.get("summary_applied", False),
                 }
             }
         except Exception as e:

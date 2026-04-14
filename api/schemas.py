@@ -37,6 +37,10 @@ class QueryDebugInfo(BaseModel):
     applied_category: Optional[str] = Field(None, description="实际应用的分类过滤")
     retrieval_count: int = Field(0, description="实际命中文档数量")
     used_chat_mode: bool = Field(False, description="是否未命中知识库")
+    memory_applied: bool = Field(False, description="是否注入了历史记忆")
+    memory_message_count: int = Field(0, description="注入的历史消息数量")
+    fact_memory_count: int = Field(0, description="注入的事实记忆数量")
+    summary_memory_applied: bool = Field(False, description="是否注入了摘要记忆")
 
 
 class QueryResponse(BaseModel):
