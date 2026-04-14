@@ -5,10 +5,12 @@
 import os
 import re
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import List, Dict
 from fastapi import UploadFile, HTTPException
 from loguru import logger
+from rag.md5_checker import MD5Checker
 
 
 class FileUploadService:
@@ -186,6 +188,7 @@ class FileUploadService:
             文件信息列表
         """
         files = []
+        md5_checker = MD5Checker()
         
         if category:
             search_dirs = [self.upload_dir / category]
@@ -196,11 +199,15 @@ class FileUploadService:
             if search_dir.exists():
                 for file_path in search_dir.rglob('*'):
                     if file_path.is_file() and file_path.suffix.lower() in self.ALLOWED_EXTENSIONS:
+                        normalized_path = str(file_path)
                         files.append({
                             "filename": file_path.name,
                             "category": file_path.parent.name,
                             "size": file_path.stat().st_size,
-                            "path": str(file_path)
+                            "path": normalized_path,
+                            "filepath": normalized_path,
+                            "upload_time": datetime.fromtimestamp(file_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                            "status": "vectorized" if md5_checker.check_file_exists(normalized_path) else "pending"
                         })
         
         return files

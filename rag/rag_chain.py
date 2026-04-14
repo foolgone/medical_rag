@@ -51,11 +51,29 @@ class MedicalRAGChain:
                 "category": doc.metadata.get("category", "未知"),
                 "content": doc.page_content[:200],
                 "score": doc.metadata.get("score"),
+                "raw_score": doc.metadata.get("raw_score"),
+                "keyword_score": doc.metadata.get("keyword_score"),
+                "rerank_score": doc.metadata.get("rerank_score"),
                 "page": doc.metadata.get("page"),
                 "chunk_id": doc.metadata.get("chunk_id"),
+                "source_type": doc.metadata.get("source_type"),
+                "updated_at": doc.metadata.get("updated_at"),
+                "retrieval_methods": doc.metadata.get("retrieval_methods", []),
             }
             for doc in documents
         ]
+
+    @staticmethod
+    def build_low_confidence_notice(best_score: Optional[float]) -> str:
+        """构建低置信检索提示。"""
+        if best_score is None:
+            return "注意：当前知识库命中不足，以下回答可能不完全对应你的问题，建议结合医生意见判断。"
+
+        return (
+            "注意：当前知识库命中不足，"
+            f"本次检索最佳匹配分数约为 {best_score:.2f}，"
+            "以下回答仅供参考，建议结合医生意见判断。"
+        )
     
     def ingest_documents(self, data_dir: str = None, category: str = "general") -> int:
         """
@@ -118,7 +136,10 @@ class MedicalRAGChain:
             logger.info(f"处理问题: {question[:50]}...")
 
             # 检索相关文档
-            docs = self.retriever.retrieve(question, k=k, filter_dict=filter_dict)
+            retrieval = self.retriever.retrieve_with_diagnostics(question, k=k, filter_dict=filter_dict)
+            docs = retrieval["documents"]
+            low_confidence = retrieval["low_confidence"]
+            best_score = retrieval["best_score"]
 
             if not docs:
                 # 如果没有检索到文档，直接使用LLM聊天模式
@@ -131,6 +152,8 @@ class MedicalRAGChain:
 
                 # 生成回答
                 answer = self.llm_client.generate_with_context(question, context)
+                if low_confidence:
+                    answer = f"{self.build_low_confidence_notice(best_score)}\n\n{answer}"
 
             # 保存对话历史
             if session_id:
@@ -148,6 +171,14 @@ class MedicalRAGChain:
                     "applied_category": filter_dict.get("category") if filter_dict else None,
                     "retrieval_count": len(docs),
                     "used_chat_mode": not docs,
+                    "low_confidence": low_confidence,
+                    "best_score": best_score,
+                    "fallback_reason": "no_retrieval" if not docs else ("low_confidence" if low_confidence else None),
+                    "retrieval_strategy": retrieval.get("retrieval_strategy"),
+                    "vector_result_count": retrieval.get("vector_result_count", 0),
+                    "keyword_result_count": retrieval.get("keyword_result_count", 0),
+                    "merged_result_count": retrieval.get("merged_result_count", 0),
+                    "rewritten_query": retrieval.get("rewritten_query"),
                 },
             }
 
@@ -179,7 +210,10 @@ class MedicalRAGChain:
         logger.info(f"流式处理问题: {question[:50]}...")
 
         try:
-            docs = self.retriever.retrieve(question, k=k, filter_dict=filter_dict)
+            retrieval = self.retriever.retrieve_with_diagnostics(question, k=k, filter_dict=filter_dict)
+            docs = retrieval["documents"]
+            low_confidence = retrieval["low_confidence"]
+            best_score = retrieval["best_score"]
             sources = self.serialize_sources(docs)
             used_chat_mode = not docs
 
@@ -208,6 +242,14 @@ class MedicalRAGChain:
                 context = ""
             else:
                 context = self.retriever.format_context(docs)
+                if low_confidence:
+                    notice = self.build_low_confidence_notice(best_score)
+                    answer_parts.append(f"{notice}\n\n")
+                    yield {
+                        "type": "content",
+                        "content": f"{notice}\n\n",
+                    }
+
                 async for chunk in self.llm_client.generate_with_context_stream(question, context):
                     answer_parts.append(chunk)
                     yield {
@@ -233,6 +275,14 @@ class MedicalRAGChain:
                     "applied_category": filter_dict.get("category") if filter_dict else None,
                     "retrieval_count": len(docs),
                     "used_chat_mode": used_chat_mode,
+                    "low_confidence": low_confidence,
+                    "best_score": best_score,
+                    "fallback_reason": "no_retrieval" if used_chat_mode else ("low_confidence" if low_confidence else None),
+                    "retrieval_strategy": retrieval.get("retrieval_strategy"),
+                    "vector_result_count": retrieval.get("vector_result_count", 0),
+                    "keyword_result_count": retrieval.get("keyword_result_count", 0),
+                    "merged_result_count": retrieval.get("merged_result_count", 0),
+                    "rewritten_query": retrieval.get("rewritten_query"),
                 },
             }
         except Exception as e:

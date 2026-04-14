@@ -1,4 +1,6 @@
 """消息显示组件 - 渲染聊天消息"""
+import html
+
 import streamlit as st
 from app.state_manager import state_manager
 
@@ -94,7 +96,27 @@ def _build_references_html(message: dict) -> str:
     refs = message["references"]
     ref_items = []
     for ref in refs[:3]:
-        ref_items.append(f"• {ref.get('filename', '未知文件')}")
+        filename = html.escape(ref.get("filename", "未知文件"))
+        category = html.escape(ref.get("category") or "未分类")
+        page = ref.get("page")
+        score = ref.get("score")
+        rerank_score = ref.get("rerank_score")
+        retrieval_methods = ref.get("retrieval_methods") or []
+        content = html.escape((ref.get("content") or "").strip())
+
+        details = [f"分类: {category}"]
+        if page:
+            details.append(f"页码: {page}")
+        if score is not None:
+            details.append(f"匹配分数: {score:.2f}")
+        if rerank_score is not None:
+            details.append(f"重排分数: {rerank_score:.2f}")
+        if retrieval_methods:
+            details.append(f"召回: {', '.join(retrieval_methods)}")
+
+        detail_text = " | ".join(details)
+        snippet = f"<br><span style='color: #666;'>片段: {content[:80]}...</span>" if content else ""
+        ref_items.append(f"• {filename}<br><span>{detail_text}</span>{snippet}")
 
     return (
         f'<div style="margin-top: 0.5rem; padding: 0.5rem; background: #fff3e0; '

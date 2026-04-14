@@ -4,6 +4,23 @@ from app.api_client import APIClient
 from app.state_manager import state_manager
 
 
+def _build_reference_items(sources: list) -> list:
+    """将后端来源结构转换为前端展示结构。"""
+    references = []
+    for src in sources[:3]:
+        references.append({
+            "filename": src.get("source", "未知"),
+            "category": src.get("category"),
+            "page": src.get("page"),
+            "score": src.get("score"),
+            "rerank_score": src.get("rerank_score"),
+            "retrieval_methods": src.get("retrieval_methods", []),
+            "content": src.get("content", ""),
+            "chunk_id": src.get("chunk_id"),
+        })
+    return references
+
+
 def handle_stream_query(api_client: APIClient, question: str, settings: dict):
     """流式查询处理"""
     status_placeholder = st.empty()
@@ -32,7 +49,7 @@ def handle_stream_query(api_client: APIClient, question: str, settings: dict):
             elif event_type == "retrieval":
                 sources = event.get("sources", [])
                 if sources:
-                    references = [{"filename": src.get("source", "未知")} for src in sources[:3]]
+                    references = _build_reference_items(sources)
 
             elif event_type == "content":
                 _show_loading_status(status_placeholder, "✍️ 正在生成回复...", "#ff9800")
@@ -45,10 +62,7 @@ def handle_stream_query(api_client: APIClient, question: str, settings: dict):
 
                 content = content or event.get("answer", "")
                 if not references and event.get("sources"):
-                    references = [
-                        {"filename": src.get("source", "未知")}
-                        for src in event.get("sources", [])[:3]
-                    ]
+                    references = _build_reference_items(event.get("sources", []))
                 if not tool_calls and event.get("tool_calls"):
                     tool_calls = event.get("tool_calls", [])
 
@@ -92,10 +106,7 @@ def handle_normal_query(api_client: APIClient, question: str, settings: dict):
             }
 
             if result.get("sources"):
-                ai_message["references"] = [
-                    {"filename": src.get("source", "未知")}
-                    for src in result["sources"][:3]
-                ]
+                ai_message["references"] = _build_reference_items(result["sources"])
 
             state_manager.messages.append(ai_message)
             st.rerun()

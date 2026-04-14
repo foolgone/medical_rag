@@ -2,10 +2,12 @@
 嵌入模型和向量存储模块
 使用Ollama提供嵌入服务，PostgreSQL存储向量
 """
-from typing import List, Optional
+import json
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 
+from langchain_core.documents import Document
 from langchain_ollama import OllamaEmbeddings
 from langchain_postgres import PGVector
 from config import settings
@@ -200,6 +202,75 @@ class MedicalVectorStore:
         except Exception as e:
             logger.error(f"带分数相似度搜索失败: {e}")
             raise
+
+    @staticmethod
+    def _parse_metadata(metadata: Any) -> Dict[str, Any]:
+        """兼容 psycopg 返回 dict / JSON 字符串两种情况。"""
+        if isinstance(metadata, dict):
+            return metadata
+
+        if isinstance(metadata, str):
+            try:
+                return json.loads(metadata)
+            except Exception:
+                return {}
+
+        return {}
+
+    def fetch_documents(
+        self,
+        filter_dict: Optional[dict] = None,
+        limit: Optional[int] = None
+    ) -> List[Document]:
+        """
+        从向量库读取已入库文档块，供关键词检索等离线打分使用。
+
+        Args:
+            filter_dict: 元数据过滤条件
+            limit: 限制返回数量
+
+        Returns:
+            文档列表
+        """
+        sql = """
+            SELECT e.id, e.document, e.cmetadata
+            FROM langchain_pg_embedding e
+            JOIN langchain_pg_collection c ON e.collection_id = c.uuid
+            WHERE c.name = :collection_name
+        """
+
+        params: Dict[str, Any] = {"collection_name": self.collection_name}
+
+        if filter_dict and filter_dict.get("category"):
+            sql += " AND e.cmetadata->>'category' = :category"
+            params["category"] = filter_dict["category"]
+
+        sql += " ORDER BY e.id"
+
+        if limit is not None:
+            sql += " LIMIT :limit"
+            params["limit"] = limit
+
+        try:
+            documents: List[Document] = []
+            with engine.connect() as conn:
+                rows = conn.execute(text(sql), params).mappings().all()
+
+            for row in rows:
+                metadata = self._parse_metadata(row.get("cmetadata"))
+                metadata.setdefault("chunk_id", row.get("id"))
+                documents.append(
+                    Document(
+                        page_content=row.get("document") or "",
+                        metadata=metadata
+                    )
+                )
+
+            logger.debug(f"从向量库读取 {len(documents)} 个文档块用于关键词检索")
+            return documents
+        except Exception as e:
+            logger.error(f"读取向量库文档失败: {e}")
+            return []
 
     def count_documents(self) -> int:
         """

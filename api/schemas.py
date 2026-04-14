@@ -21,8 +21,14 @@ class SourceItem(BaseModel):
     category: Optional[str] = Field(None, description="文档分类")
     content: Optional[str] = Field(None, description="命中文档片段")
     score: Optional[float] = Field(None, description="检索分数")
+    raw_score: Optional[float] = Field(None, description="原始检索距离分数")
+    keyword_score: Optional[float] = Field(None, description="关键词检索分数")
+    rerank_score: Optional[float] = Field(None, description="重排后的融合分数")
     page: Optional[int] = Field(None, description="页码")
     chunk_id: Optional[str] = Field(None, description="文档块ID")
+    source_type: Optional[str] = Field(None, description="来源文件类型")
+    updated_at: Optional[str] = Field(None, description="文档更新时间")
+    retrieval_methods: List[str] = Field(default_factory=list, description="命中的检索方式")
 
 
 class ToolCallItem(BaseModel):
@@ -37,6 +43,14 @@ class QueryDebugInfo(BaseModel):
     applied_category: Optional[str] = Field(None, description="实际应用的分类过滤")
     retrieval_count: int = Field(0, description="实际命中文档数量")
     used_chat_mode: bool = Field(False, description="是否未命中知识库")
+    low_confidence: bool = Field(False, description="是否为低置信命中")
+    best_score: Optional[float] = Field(None, description="最佳匹配分数")
+    fallback_reason: Optional[str] = Field(None, description="降级原因")
+    retrieval_strategy: Optional[str] = Field(None, description="检索策略")
+    vector_result_count: int = Field(0, description="向量召回候选数")
+    keyword_result_count: int = Field(0, description="关键词召回候选数")
+    merged_result_count: int = Field(0, description="融合后的候选数")
+    rewritten_query: Optional[str] = Field(None, description="查询改写结果")
     memory_applied: bool = Field(False, description="是否注入了历史记忆")
     memory_message_count: int = Field(0, description="注入的历史消息数量")
     fact_memory_count: int = Field(0, description="注入的事实记忆数量")
@@ -122,6 +136,9 @@ class FileInfo(BaseModel):
     category: str = Field(..., description="文档分类")
     size: int = Field(..., description="文件大小（字节）")
     path: str = Field(..., description="文件路径")
+    filepath: Optional[str] = Field(None, description="文件路径")
+    upload_time: Optional[str] = Field(None, description="上传时间")
+    status: Optional[str] = Field("pending", description="文件状态")
 
 
 class FileListResponse(BaseModel):

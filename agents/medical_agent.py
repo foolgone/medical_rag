@@ -351,11 +351,14 @@ class MedicalAgent:
 
         try:
             memory_bundle = self._get_memory_bundle(thread_id, question)
-            docs = self.rag_chain.retriever.retrieve(
+            retrieval = self.rag_chain.retriever.retrieve_with_diagnostics(
                 query=question,
                 k=k,
                 filter_dict=filter_dict
             )
+            docs = retrieval["documents"]
+            low_confidence = retrieval["low_confidence"]
+            best_score = retrieval["best_score"]
 
             # 调用Agent
             result = self.agent.invoke(
@@ -365,6 +368,8 @@ class MedicalAgent:
 
             # 回溯提取最后一条真正的文本回答，避免把工具调用块当正文
             answer = self._extract_final_answer(result["messages"])
+            if low_confidence and answer:
+                answer = f"{self.rag_chain.build_low_confidence_notice(best_score)}\n\n{answer}"
 
             # 提取工具调用信息
             tool_calls = []
@@ -406,6 +411,14 @@ class MedicalAgent:
                     "applied_category": category,
                     "retrieval_count": len(sources),
                     "used_chat_mode": len(sources) == 0,
+                    "low_confidence": low_confidence,
+                    "best_score": best_score,
+                    "fallback_reason": "no_retrieval" if len(sources) == 0 else ("low_confidence" if low_confidence else None),
+                    "retrieval_strategy": retrieval.get("retrieval_strategy"),
+                    "vector_result_count": retrieval.get("vector_result_count", 0),
+                    "keyword_result_count": retrieval.get("keyword_result_count", 0),
+                    "merged_result_count": retrieval.get("merged_result_count", 0),
+                    "rewritten_query": retrieval.get("rewritten_query"),
                     "memory_applied": memory_applied,
                     "memory_message_count": memory_debug.get("memory_message_count", 0),
                     "fact_memory_count": memory_debug.get("fact_count", 0),
@@ -426,6 +439,14 @@ class MedicalAgent:
                     "applied_category": category,
                     "retrieval_count": 0,
                     "used_chat_mode": True,
+                    "low_confidence": False,
+                    "best_score": None,
+                    "fallback_reason": "error",
+                    "retrieval_strategy": "hybrid",
+                    "vector_result_count": 0,
+                    "keyword_result_count": 0,
+                    "merged_result_count": 0,
+                    "rewritten_query": None,
                     "memory_applied": False,
                     "memory_message_count": 0,
                     "fact_memory_count": 0,
@@ -458,11 +479,14 @@ class MedicalAgent:
             config = {"configurable": {"thread_id": runtime_thread_id}}
             filter_dict = self.rag_chain.build_filter_dict(category)
             memory_bundle = self._get_memory_bundle(thread_id, question)
-            docs = self.rag_chain.retriever.retrieve(
+            retrieval = self.rag_chain.retriever.retrieve_with_diagnostics(
                 query=question,
                 k=k,
                 filter_dict=filter_dict
             )
+            docs = retrieval["documents"]
+            low_confidence = retrieval["low_confidence"]
+            best_score = retrieval["best_score"]
             sources = self.rag_chain.serialize_sources(docs)
             messages = self._build_messages(question, docs, category, memory_bundle)
             answer_parts: List[str] = []
@@ -479,6 +503,14 @@ class MedicalAgent:
                 yield {
                     "type": "retrieval",
                     "sources": sources
+                }
+
+            if low_confidence:
+                notice = self.rag_chain.build_low_confidence_notice(best_score)
+                answer_parts.append(f"{notice}\n\n")
+                yield {
+                    "type": "content",
+                    "content": f"{notice}\n\n"
                 }
 
             for event in self.agent.stream(
@@ -550,6 +582,14 @@ class MedicalAgent:
                     "applied_category": category,
                     "retrieval_count": len(sources),
                     "used_chat_mode": len(sources) == 0,
+                    "low_confidence": low_confidence,
+                    "best_score": best_score,
+                    "fallback_reason": "no_retrieval" if len(sources) == 0 else ("low_confidence" if low_confidence else None),
+                    "retrieval_strategy": retrieval.get("retrieval_strategy"),
+                    "vector_result_count": retrieval.get("vector_result_count", 0),
+                    "keyword_result_count": retrieval.get("keyword_result_count", 0),
+                    "merged_result_count": retrieval.get("merged_result_count", 0),
+                    "rewritten_query": retrieval.get("rewritten_query"),
                     "memory_applied": memory_applied,
                     "memory_message_count": memory_debug.get("memory_message_count", 0),
                     "fact_memory_count": memory_debug.get("fact_count", 0),

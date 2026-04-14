@@ -2,6 +2,7 @@
 文档加载器模块
 支持PDF、Word、TXT等格式的医疗文档加载
 """
+from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from langchain_community.document_loaders import (
@@ -185,9 +186,57 @@ class MedicalDocumentLoader:
         # 记录MD5
         if docs and self.enable_md5_check:
             self.md5_checker.add_file_record(str(file_path))
-        
+
         return docs, len(docs) > 0
-    
+
+    def _infer_category_from_source(self, source_path: Optional[str]) -> Optional[str]:
+        """根据文件路径推断分类目录。"""
+        if not source_path:
+            return None
+
+        try:
+            source = Path(source_path).resolve()
+            data_dir = self.data_dir.resolve()
+            parent = source.parent
+
+            if parent == data_dir:
+                return "general"
+
+            relative_parent = parent.relative_to(data_dir)
+            parts = relative_parent.parts
+            if not parts:
+                return "general"
+
+            return parts[0]
+        except Exception:
+            return Path(source_path).parent.name or None
+
+    @staticmethod
+    def _normalize_page(page: Optional[object]) -> Optional[int]:
+        """统一页码格式，PDF 场景从 0 基转为 1 基。"""
+        if page is None:
+            return None
+
+        if isinstance(page, int):
+            return page + 1 if page >= 0 else 1
+
+        return None
+
+    @staticmethod
+    def _resolve_updated_at(source_path: Optional[str], existing_value: Optional[str]) -> Optional[str]:
+        """优先复用已有时间，否则读取文件修改时间。"""
+        if existing_value:
+            return existing_value
+
+        if not source_path:
+            return None
+
+        try:
+            modified_at = datetime.fromtimestamp(Path(source_path).stat().st_mtime)
+            return modified_at.isoformat()
+        except Exception:
+            return None
+
     def add_metadata(self, documents: List[Document], category: str = "general") -> List[Document]:
         """
         为文档添加元数据
@@ -200,8 +249,25 @@ class MedicalDocumentLoader:
             添加了元数据的文档列表
         """
         for doc in documents:
+            source_path = doc.metadata.get("source")
+            source_name = Path(source_path).name if source_path else doc.metadata.get("source", "未知来源")
+            inferred_category = self._infer_category_from_source(source_path)
+            page = self._normalize_page(doc.metadata.get("page"))
+            source_type = doc.metadata.get("source_type")
+
+            if not source_type and source_path:
+                source_type = Path(source_path).suffix.lower().lstrip(".") or "unknown"
+
+            resolved_category = category
+            if inferred_category and (not category or category == "general"):
+                resolved_category = inferred_category
+
             doc.metadata.update({
-                "category": category,
-                "source_type": "medical"
+                "source": source_name,
+                "source_path": source_path,
+                "category": resolved_category or inferred_category or "general",
+                "page": page,
+                "source_type": source_type or "unknown",
+                "updated_at": self._resolve_updated_at(source_path, doc.metadata.get("updated_at")),
             })
         return documents
