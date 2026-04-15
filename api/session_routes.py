@@ -33,7 +33,7 @@ def verify_session_token(session_id: str, session_token: str) -> bool:
     """验证 session_token 是否与 session_id 的存储哈希匹配。
 
     使用 `hmac.compare_digest` 防止时序攻击。
-    验证成功时同步更新 `last_used_at`。
+    验证成功时同步更新 `last_used_at`；`get_db_session` 上下文管理器会在退出时自动提交。
     """
     try:
         expected_hash = _hash_token(session_token)
@@ -45,6 +45,7 @@ def verify_session_token(session_id: str, session_token: str) -> bool:
                 return False
             matched = hmac.compare_digest(record.token_hash, expected_hash)
             if matched:
+                # get_db_session 退出时会 commit，此处赋值即可持久化
                 record.last_used_at = datetime.now(timezone.utc)
             return matched
     except Exception as e:

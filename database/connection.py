@@ -84,10 +84,8 @@ def _upgrade_session_tokens_schema():
     session_tokens 表由 create_all 创建；此处补充幂等检查，保证旧环境平滑升级。
     """
     inspector = inspect(engine)
-    logger.info(
-        "session_tokens 表结构检查完成: exists={}",
-        "session_tokens" in inspector.get_table_names(),
-    )
+    exists = "session_tokens" in inspector.get_table_names()
+    logger.info(f"session_tokens 表结构检查完成: exists={exists}")
 
 
 def init_db():

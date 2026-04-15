@@ -210,7 +210,7 @@ async def query_stream(request: QueryRequest, http_request: Request):
                     category=request.category,
                 ):
                     if isinstance(event, dict) and event.get("type") == "end":
-                        event["request_id"] = request_id
+                        event = {**event, "request_id": request_id}
                     yield format_agent_event(event)
             except Exception as e:
                 logger.error(f"流式生成失败: {e}")
@@ -234,7 +234,7 @@ async def query_stream_rag(request: QueryRequest, http_request: Request):
                     filter_dict=medical_agent.rag_chain.build_filter_dict(request.category),
                 ):
                     if isinstance(event, dict) and event.get("type") == "end":
-                        event["request_id"] = request_id
+                        event = {**event, "request_id": request_id}
                     yield format_agent_event(event)
             except Exception as e:
                 logger.error(f"RAG流式生成失败: {e}")
