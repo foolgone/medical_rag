@@ -15,6 +15,7 @@ class ChatPage(BasePage):
         settings = {
             'api_url': state_manager.api_url,
             'session_id': state_manager.session_id,
+            'session_token': state_manager.session_token,
             'top_k': state_manager.top_k,
             'query_category': state_manager.query_category,
             'query_mode': state_manager.query_mode,

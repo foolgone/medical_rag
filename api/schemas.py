@@ -11,6 +11,7 @@ class QueryRequest(BaseModel):
     """查询请求模型"""
     question: str = Field(..., description="用户问题", min_length=1, max_length=2000)
     session_id: Optional[str] = Field(None, description="会话ID")
+    session_token: Optional[str] = Field(None, description="会话令牌（由 POST /sessions 创建时返回）")
     k: Optional[int] = Field(None, description="检索文档数量", ge=1, le=20)
     category: Optional[str] = Field(None, description="文档分类过滤")
 
@@ -71,6 +72,7 @@ class QueryResponse(BaseModel):
     question: str = Field(..., description="用户问题")
     answer: str = Field(..., description="AI回答")
     session_id: Optional[str] = Field(None, description="会话ID")
+    request_id: Optional[str] = Field(None, description="请求追踪ID（与 X-Request-Id 响应头一致）")
     sources: List[SourceItem] = Field(default_factory=list, description="来源文档列表")
     tool_calls: List[ToolCallItem] = Field(default_factory=list, description="工具调用列表")
     tool_calls_count: int = Field(0, description="工具调用次数")
@@ -254,3 +256,19 @@ class FileListResponse(BaseModel):
     """文件列表响应模型"""
     files: List[FileInfo] = Field(..., description="文件列表")
     total: int = Field(..., description="文件总数")
+
+
+class CreateSessionResponse(BaseModel):
+    """创建会话响应模型"""
+    session_id: str = Field(..., description="会话ID")
+    session_token: str = Field(..., description="会话令牌（仅返回一次，请妥善保存）")
+
+
+class SessionStatsResponse(BaseModel):
+    """会话统计信息响应模型"""
+    session_id: str = Field(..., description="会话ID")
+    total_interactions: int = Field(0, description="总交互次数")
+    fact_count: int = Field(0, description="事实记忆条数")
+    summary_count: int = Field(0, description="摘要记忆条数")
+    first_interaction: Optional[str] = Field(None, description="首次交互时间（ISO 8601）")
+    last_interaction: Optional[str] = Field(None, description="最近交互时间（ISO 8601）")

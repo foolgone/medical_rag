@@ -77,6 +77,17 @@ def _upgrade_knowledge_governance_schema():
     )
 
 
+def _upgrade_session_tokens_schema():
+    """
+    检查会话令牌表结构。
+
+    session_tokens 表由 create_all 创建；此处补充幂等检查，保证旧环境平滑升级。
+    """
+    inspector = inspect(engine)
+    exists = "session_tokens" in inspector.get_table_names()
+    logger.info(f"session_tokens 表结构检查完成: exists={exists}")
+
+
 def init_db():
     """初始化数据库，创建所有表"""
     try:
@@ -84,6 +95,7 @@ def init_db():
         _upgrade_conversation_history_schema()
         _upgrade_memory_schema()
         _upgrade_knowledge_governance_schema()
+        _upgrade_session_tokens_schema()
         logger.info("数据库表创建成功")
     except Exception as e:
         logger.error(f"数据库表创建失败: {e}")

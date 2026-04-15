@@ -11,6 +11,10 @@ class AppConfig:
     timeout: int = 120
 
     @property
+    def sessions_url(self) -> str:
+        return f"{self.api_base_url}/sessions"
+
+    @property
     def query_url(self) -> str:
         return f"{self.api_base_url}/query"
 

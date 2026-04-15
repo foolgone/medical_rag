@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from api.query_routes import router as query_router
 from api.file_routes import router as file_router
 from api.knowledge_routes import router as knowledge_router
+from api.session_routes import router as session_router
 
 router = APIRouter()
 
@@ -10,3 +11,4 @@ router = APIRouter()
 router.include_router(query_router)
 router.include_router(file_router)
 router.include_router(knowledge_router)
+router.include_router(session_router)
