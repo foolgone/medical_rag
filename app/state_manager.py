@@ -16,7 +16,7 @@ class StateManager:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def initialize(self):
+    def initialize(self, api_client=None):
         """初始化所有会话状态"""
         # 导航状态
         if 'current_page' not in st.session_state:
@@ -29,9 +29,24 @@ class StateManager:
         if 'chat_title' not in st.session_state:
             st.session_state.chat_title = "Agent智能对话"
 
-        # 会话ID
+        # 会话ID 与令牌：优先通过后端 API 创建以获得令牌
         if 'session_id' not in st.session_state:
-            st.session_state.session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            session_data = None
+            if api_client is not None:
+                try:
+                    session_data = api_client.create_session()
+                except Exception:
+                    session_data = None
+
+            if session_data:
+                st.session_state.session_id = session_data["session_id"]
+                st.session_state.session_token = session_data["session_token"]
+            else:
+                st.session_state.session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                st.session_state.session_token = None
+
+        if 'session_token' not in st.session_state:
+            st.session_state.session_token = None
 
         # 设置状态
         if 'api_url' not in st.session_state:
@@ -101,6 +116,14 @@ class StateManager:
     @session_id.setter
     def session_id(self, value: str):
         st.session_state.session_id = value
+
+    @property
+    def session_token(self) -> Optional[str]:
+        return st.session_state.get('session_token')
+
+    @session_token.setter
+    def session_token(self, value: Optional[str]):
+        st.session_state.session_token = value
 
     @property
     def top_k(self) -> int:

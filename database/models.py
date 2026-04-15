@@ -116,6 +116,20 @@ class KnowledgeBaseFile(Base):
         )
 
 
+class SessionToken(Base):
+    """会话令牌表"""
+    __tablename__ = "session_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(100), unique=True, nullable=False, index=True, comment="会话ID")
+    token_hash = Column(String(64), nullable=False, comment="令牌哈希（SHA-256）")
+    created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
+    last_used_at = Column(DateTime, server_default=func.now(), comment="最近使用时间")
+
+    def __repr__(self):
+        return f"<SessionToken(session_id='{self.session_id}')>"
+
+
 class KnowledgeBaseIngestJob(Base):
     """知识库导入任务日志表"""
     __tablename__ = "knowledge_base_ingest_jobs"

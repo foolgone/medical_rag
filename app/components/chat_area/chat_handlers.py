@@ -38,7 +38,8 @@ def handle_stream_query(api_client: APIClient, question: str, settings: dict):
                 settings.get('session_id', 'default'),
                 settings.get('top_k', 5),
                 settings.get('query_category'),
-                settings.get('query_mode', 'agent')
+                settings.get('query_mode', 'agent'),
+                settings.get('session_token'),
         ):
             event_type = event.get("type")
 
@@ -94,7 +95,8 @@ def handle_normal_query(api_client: APIClient, question: str, settings: dict):
                 settings.get('session_id', 'default'),
                 settings.get('top_k', 5),
                 settings.get('query_category'),
-                settings.get('query_mode', 'agent')
+                settings.get('query_mode', 'agent'),
+                settings.get('session_token'),
             )
 
             ai_message = {

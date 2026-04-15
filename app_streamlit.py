@@ -24,8 +24,8 @@ def main():
     # 使用缓存的API客户端
     api_client = get_api_client(config)
 
-    # 初始化状态管理器
-    state_manager.initialize()
+    # 初始化状态管理器（传入 api_client 以在首次加载时创建已鉴权会话）
+    state_manager.initialize(api_client)
 
     # 页面配置
     st.set_page_config(

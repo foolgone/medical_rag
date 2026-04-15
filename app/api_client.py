@@ -11,19 +11,35 @@ class APIClient:
     def __init__(self, config: AppConfig):
         self.config = config
 
+    def create_session(self) -> Optional[Dict]:
+        """创建新会话，返回 {session_id, session_token}。"""
+        try:
+            response = requests.post(
+                self.config.sessions_url,
+                timeout=10
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.warning(f"创建会话失败: {e}")
+            return None
+
     def query(
         self,
         question: str,
         session_id: str,
         top_k: int = 5,
         category: Optional[str] = None,
-        mode: str = "agent"
+        mode: str = "agent",
+        session_token: Optional[str] = None,
     ) -> Dict:
         """标准问答"""
         try:
             payload = {"question": question, "session_id": session_id, "k": top_k}
             if category and category != "all":
                 payload["category"] = category
+            if session_token:
+                payload["session_token"] = session_token
 
             response = requests.post(
                 self.config.query_rag_url if mode == "rag" else self.config.query_url,
@@ -42,13 +58,16 @@ class APIClient:
         session_id: str,
         top_k: int = 5,
         category: Optional[str] = None,
-        mode: str = "agent"
+        mode: str = "agent",
+        session_token: Optional[str] = None,
     ) -> Generator:
         """流式问答"""
         try:
             payload = {"question": question, "session_id": session_id, "k": top_k}
             if category and category != "all":
                 payload["category"] = category
+            if session_token:
+                payload["session_token"] = session_token
 
             response = requests.post(
                 self.config.query_stream_rag_url if mode == "rag" else self.config.query_stream_url,
