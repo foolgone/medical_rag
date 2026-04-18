@@ -3,12 +3,12 @@
 ![系统架构图](./images/img.png)
 ![系统界面](./images/img_1.png)
 
-一个基于 `FastAPI + Streamlit + LangChain + LangGraph + Ollama + PostgreSQL/pgvector` 的本地医疗知识问答项目。它同时提供两条主链路：
+基于 `FastAPI`、`Streamlit`、`LangChain`、`LangGraph`、`Ollama` 本地部署和 `PostgreSQL/pgvector` 搭建的本地医疗知识问答系统，支持 Agent 工具调用与纯 RAG 双链路回答，覆盖知识库导入、混合检索、会话记忆、流式响应、文件上传和前端管理核心功能。
+
+两条主链路：
 
 - `Agent` 模式：先检索知识库，再由 Tool Calling Agent 按需调用医疗工具与检索工具完成回答
 - `RAG` 模式：直接走混合检索 + 上下文生成，适合更稳定的知识库直答
-
-当前代码已经具备知识库导入、混合检索、流式问答、会话记忆、文件上传、增量更新和前端管理页面等完整闭环。
 
 ## 项目亮点
 
@@ -26,9 +26,10 @@
   - 摘要记忆：长会话阶段摘要
 - 知识库管理
   - 支持 `PDF / DOCX / TXT`
-  - MD5 去重
+  - MD5 去重，防止重复导入
   - 单文件上传、批量上传
   - 增量更新、全量更新
+  - 文件版本历史与版本回滚
   - 文件状态查看：`pending / vectorized`
 - 前端可直接操作
   - 聊天页
@@ -386,6 +387,18 @@ curl -X POST "http://localhost:8000/api/v1/update/incremental"
 | `POST` | `/api/v1/update/full` | 全量更新 |
 | `GET` | `/api/v1/stats` | 获取统计信息 |
 | `POST` | `/api/v1/documents/delete` | 删除向量文档块 |
+| `POST` | `/api/v1/documents/delete-by-rule` | 按文件/分类/版本治理维度删除 |
+| `POST` | `/api/v1/documents/rollback` | 回滚文件到指定版本 |
+| `GET` | `/api/v1/documents/{source_id}/versions` | 查询文件版本历史 |
+| `GET` | `/api/v1/ingest-jobs` | 查询导入任务日志 |
+
+### 会话管理接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/v1/sessions` | 创建新会话（返回 `session_token`） |
+| `GET` | `/api/v1/sessions/{session_id}` | 查询会话统计信息 |
+| `DELETE` | `/api/v1/sessions/{session_id}` | 删除会话及全部历史 |
 
 ### 文件管理接口
 
